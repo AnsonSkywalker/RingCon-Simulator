@@ -1,0 +1,16 @@
+# Reasonix 本地运行时数据（会话记录等），绝不提交
+.reasonix/
+
+# 指导 AI 的本地说明文档，不对外公开
+*.md
+
+# 运行产物
+*.log
+__pycache__/
+*.pyc
+
+# ESP32 构建产物（Phase 1 起生效）
+.pio/
+build/
+sdkconfig
+managed_components/
