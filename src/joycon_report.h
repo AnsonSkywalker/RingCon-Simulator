@@ -3,7 +3,8 @@
 // imu_sensor_notes); re-written, not copied. Report 0x21 (subcmd reply) and
 // 0x30 (standard full + IMU). Byte offsets follow joycontrol/report.py findings.
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <vector>
 
 namespace joycon {

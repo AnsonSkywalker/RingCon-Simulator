@@ -4,7 +4,7 @@
 // (centrifugal r*omega^2) synced to the turn (research report risk R3).
 // Axis/sign are parameters because Joy-Con R IMU axes differ from L (R4).
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
 #include "joycon_report.h"
 
 namespace joycon {

@@ -2,6 +2,7 @@
 // Protocol facts from dekuNukem reverse-engineering docs (public), re-implemented.
 #include "joycon_report.h"
 #include <string.h>
+#include <math.h>
 
 namespace joycon {
 

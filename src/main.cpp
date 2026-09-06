@@ -3,11 +3,21 @@
 // 15 ms FreeRTOS task packs three 5 ms motion frames into each 0x30 report
 // (66 Hz, matching the real Joy-Con report cadence, research report R5).
 #include <Arduino.h>
-#include "joycon_ble.h"
+#include "joycon_subcmd.h"
 #include "motion.h"
 #include "mpu.h"
 
-static joycon::JoyConBle ble;
+// Transport selected per PlatformIO env: NimBLE HOGP on the C3 (R1 reference),
+// Bluetooth Classic esp_hidd on the original ESP32 (real Joy-Con transport).
+#if defined(JC_TRANSPORT_CLASSIC)
+#include "joycon_btclassic.h"
+static joycon::JoyConBtClassic transport;
+#else
+#include "joycon_ble.h"
+static joycon::JoyConBle transport;
+#endif
+#define ble transport  // keep the historical local name in the CLI/task code
+
 static joycon::TwistMotion motion;
 static joycon::MpuSource mpu;
 static bool g_use_real_imu = false;   // 'im' command: real MPU vs synthetic curve

@@ -1,0 +1,26 @@
+// AIGC note: joycon_subcmd - transport-agnostic output-report (0xA2) parser and
+// sub-command dispatcher. Shared by the BLE (NimBLE HOGP) and Bluetooth Classic
+// (Bluedroid esp_hidd) transports; only the reply byte-plumbing differs.
+// Ack values follow joycontrol's field-tested table: 0x82 device info,
+// 0x83 trigger-times, 0x90 SPI flash read, 0xA0 NFC/IR MCU config, else 0x80.
+#pragma once
+#include <stdint.h>
+#include "joycon_report.h"
+
+namespace joycon {
+
+struct SubCmdState {
+  bool imu_enabled = false;
+  uint8_t report_mode = 0x30;
+  uint8_t joycon_type = 0x02;  // 0x02 = Joy-Con R
+  uint8_t mac[6] = {0, 0, 0, 0, 0, 0};  // transport fills (little-endian native)
+};
+
+// Parses one output report (counter, rumble*8, subcmd, args...). Accepts an
+// optional leading report-id byte (0x01/0x10/0x11/0x12). On success writes a
+// complete classic 0x21 frame (0xA1 + id + ack..) into out51 and returns the
+// frame length (always 51); returns 0 when the report is malformed.
+size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
+                            const ReportPacker& packer, uint8_t* out51);
+
+}  // namespace joycon
