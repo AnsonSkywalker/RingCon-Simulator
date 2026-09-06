@@ -14,3 +14,6 @@ __pycache__/
 build/
 sdkconfig
 managed_components/
+
+# 本地精读用的第三方参考仓库（含 GPL 代码，绝不提交）
+refs/
