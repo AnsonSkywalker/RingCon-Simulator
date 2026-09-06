@@ -13,7 +13,12 @@ __pycache__/
 .pio/
 build/
 sdkconfig
+sdkconfig.esp32classic
 managed_components/
 
 # 本地精读用的第三方参考仓库（含 GPL 代码，绝不提交）
 refs/
+
+# Phase 0 录制产物（不入库，见 HANDOFF §〇.5）
+tools/record_*.csv
+tools/record_*.png
