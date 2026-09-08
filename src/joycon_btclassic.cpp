@@ -158,6 +158,10 @@ void JoyConBtClassic::notify3F(uint8_t btn1, uint8_t btn2) {
                                 buf + 2);
 }
 
+void JoyConBtClassic::disconnect() {
+  if (connected_) esp_bt_hid_device_disconnect();
+}
+
 void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
   // Wire diagnosis: dump what the host actually sends after the stack strips
   // the 0xA2 DATA-OUTPUT transaction header (Switch 2 framing unknown at the

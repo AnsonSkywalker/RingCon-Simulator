@@ -30,6 +30,36 @@ static uint8_t g_30_b4 = 0, g_30_b5 = 0;
 
 static int64_t now_us() { return esp_timer_get_time(); }
 
+// Abstract button -> report bit routing. The frontend never mentions report
+// modes; whichever phase the host put us in (0x3F grip screen / 0x30 full)
+// decides where a named button lands. 0x3F d-pad bits follow the user-verified
+// sideways mapping (physical A reads as "X" in the paired view => d-pad Up);
+// 0x30 bits are the raw joycontrol-verified layout.
+namespace {
+struct BtnRoute {
+  const char* name;
+  uint8_t f_byte, f_bit;    // 0x3F simple report bytes 1/2
+  uint8_t full_byte, full_bit;  // 0x30 report bytes 4/5
+};
+const BtnRoute kBtnRoutes[] = {
+    {"A", 1, 0x08, 4, 0x08},  // sideways A = d-pad Up (verified: pairs-view X)
+    {"B", 1, 0x02, 4, 0x04},  // sideways B = d-pad Right
+    {"X", 1, 0x04, 4, 0x02},  // sideways X = d-pad Left
+    {"Y", 1, 0x01, 4, 0x01},  // sideways Y = d-pad Down
+    {"SL", 1, 0x10, 4, 0x20},
+    {"SR", 1, 0x20, 4, 0x10},
+    {"R", 2, 0x40, 4, 0x40},   // grip-screen pair button (pair mode uses L/R)
+    {"ZR", 2, 0x80, 4, 0x80},
+    {"Plus", 2, 0x02, 5, 0x02},
+    {"RStick", 2, 0x04, 5, 0x04},
+    {"Home", 2, 0x10, 5, 0x10},
+};
+void setBit(uint8_t& byte, uint8_t bit, bool on) {
+  if (on) byte |= bit;
+  else byte &= ~bit;
+}
+}  // namespace
+
 // On-board BOOT key (GPIO0, active low) = physical A fallback
 static bool bootPressed() { return gpio_get_level(GPIO_NUM_0) == 0; }
 
@@ -66,16 +96,16 @@ static void reportTask(void*) {
 }
 
 static void printHelp() {
-  printf("[cmd] t [deg] [out_ms]  one calibrated two-way twist\n");
+  printf("[cmd] bp <btn> / br <btn>  press/release A B X Y SL SR R ZR Plus RStick Home\n");
+  printf("[cmd] rst               sleep: drop the connection (icon disappears)\n");
+  printf("[cmd] gr                gyro orientation reset to face-up rest\n");
   printf("[cmd] tl / tr           twist left / right (two-way)\n");
   printf("[cmd] rot <0..2> <1|-1> rotate 90 deg around body axis X/Y/Z\n");
-  printf("[cmd] rst               reset orientation to face-up rest\n");
+  printf("[cmd] t [deg] [out_ms]  one calibrated two-way twist\n");
   printf("[cmd] y <0..2> <1|-1>   yaw gyro axis / sign (Joy-Con R flip)\n");
   printf("[cmd] s <float>         gyro scale dps/lsb (0.06103 or 0.07)\n");
   printf("[cmd] m <0|1>           synthetic motion off/on\n");
   printf("[cmd] r <0|1>           repeat twist every 1.5 s\n");
-  printf("[cmd] kb <b1> [b2]      0x3F button bytes hex (30 = SL+SR, 01 = A)\n");
-  printf("[cmd] kb30 <b4> [b5]    0x30 button bytes hex (08 = A in b4)\n");
   printf("[cmd] p                 show twist curve parameters\n");
   printf("[cmd] i                 status\n");
 }
@@ -142,6 +172,36 @@ static void handleCmd(const char* line) {
     if ((tok = strtok_r(nullptr, " \t", &save))) g_repeat = atoi(tok) != 0;
     g_next_repeat_us = 0;
     printf("[cmd] repeat %s\n", g_repeat ? "on" : "off");
+  } else if (!strcmp(tok, "bp") || !strcmp(tok, "br")) {
+    // Abstract press/release: routed to the live report mode's bit layout.
+    bool down = tok[1] == 'p';
+    if (!(tok = strtok_r(nullptr, " \t", &save))) {
+      printf("[cmd] usage: bp <A|B|X|Y|SL|SR|R|ZR|Plus|RStick|Home>\n");
+    } else {
+      int idx = -1;
+      for (unsigned i = 0; i < sizeof(kBtnRoutes) / sizeof(kBtnRoutes[0]); i++)
+        if (!strcmp(tok, kBtnRoutes[i].name)) { idx = (int)i; break; }
+      if (idx < 0) {
+        printf("[cmd] unknown button '%s'\n", tok);
+      } else {
+        const BtnRoute& r = kBtnRoutes[idx];
+        if (transport.reportMode() == 0x30) {
+          if (r.full_byte == 4) setBit(g_30_b4, r.full_bit, down);
+          else setBit(g_30_b5, r.full_bit, down);
+        } else {
+          if (r.f_byte == 1) setBit(g_kb1, r.f_bit, down);
+          else setBit(g_kb2, r.f_bit, down);
+        }
+        printf("[cmd] %s %s via 0x%02X%s\n", tok, down ? "down" : "up",
+                      transport.reportMode(), transport.connected() ? "" : " (queued, not connected)");
+      }
+    }
+  } else if (!strcmp(tok, "rst")) {  // real-JoyCon behavior: sleep & unlink
+    transport.disconnect();
+    printf("[cmd] sleeping (disconnecting; any pairing attempt relinks)\n");
+  } else if (!strcmp(tok, "gr")) {  // smooth orientation return to face-up
+    motion.armReset();
+    printf("[cmd] orientation reset\n");
   } else if (!strcmp(tok, "tl") || !strcmp(tok, "tr")) {
     motion.armTwist(tok[1] == 'l' ? 1 : -1);
     printf("[cmd] twist %s\n", tok[1] == 'l' ? "left(+)" : "right(-)");
@@ -155,9 +215,6 @@ static void handleCmd(const char* line) {
       motion.armRot((uint8_t)axis, (float)sign);
       printf("[cmd] rot axis=%ld sign=%ld\n", axis, sign);
     }
-  } else if (!strcmp(tok, "rst")) {  // smooth return to face-up rest
-    motion.armReset();
-    printf("[cmd] orientation reset\n");
   } else if (!strcmp(tok, "kb")) {  // 0x3F simple-mode button bytes (hex)
     long v1 = g_kb1, v2 = g_kb2;
     if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
