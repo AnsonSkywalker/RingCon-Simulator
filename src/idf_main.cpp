@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "driver/gpio.h"
 #include "esp_timer.h"
 #include "jc_log.h"
 #include "joycon_btclassic.h"
@@ -21,20 +22,39 @@ static bool g_motion_on = true;       // 'm' command: synthetic motion vs still
 static bool g_repeat = true;          // 'r' command: twist every 1.5 s
 static int64_t g_next_repeat_us = 0;
 static uint32_t g_reports = 0;
+// Remote-controlled button bytes (PC frontend / serial). 0x3F simple mode:
+// b1 = Down(A)/Right(X)/Left(B)/Up(Y)/SL/SR, b2 = Minus/Plus/Home/Capture/R/ZR.
+// 0x30 full mode: b4/b5 are report bytes 4/5 (A=0x08 in b4).
+static uint8_t g_kb1 = 0, g_kb2 = 0;
+static uint8_t g_30_b4 = 0, g_30_b5 = 0;
 
 static int64_t now_us() { return esp_timer_get_time(); }
+
+// On-board BOOT key (GPIO0, active low) = physical A fallback
+static bool bootPressed() { return gpio_get_level(GPIO_NUM_0) == 0; }
 
 static void reportTask(void*) {
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
-    if (transport.connected() && transport.reportMode() == 0x30) {
-      joycon::ReportState frames[3];
-      for (int i = 0; i < 3; i++) {
-        frames[i] = joycon::ReportState{};  // resting pose, zero gyro
-        if (g_motion_on) motion.tick(5, frames[i]);
+    if (transport.connected()) {
+      if (transport.reportMode() == 0x30) {
+        joycon::ReportState frames[3];
+        uint32_t btn = (uint32_t)g_30_b4 | ((uint32_t)g_30_b5 << 8);
+        if (bootPressed()) btn |= 0x08;  // physical A in full mode
+        for (int i = 0; i < 3; i++) {
+          frames[i] = joycon::ReportState{};
+          frames[i].buttons = btn;
+          if (g_motion_on) motion.tick(5, frames[i]);
+        }
+        transport.notify30(frames, g_timer++, transport.imuEnabled());
+        g_reports++;
+      } else if (transport.reportMode() == 0x3F) {
+        // Pre-handshake simple mode: buttons come from the PC frontend
+        // (tools/jc_remote.py) via 'kb'; BOOT key = momentary A.
+        uint8_t b1 = g_kb1, b2 = g_kb2;
+        if (bootPressed()) b1 |= 0x01;
+        transport.notify3F(b1, b2);
       }
-      transport.notify30(frames, g_timer++, transport.imuEnabled());
-      g_reports++;
     }
     if (g_repeat && !motion.active() && now_us() >= g_next_repeat_us) {
       motion.armTwist();
@@ -50,6 +70,8 @@ static void printHelp() {
   printf("[cmd] s <float>         gyro scale dps/lsb (0.06103 or 0.07)\n");
   printf("[cmd] m <0|1>           synthetic motion off/on\n");
   printf("[cmd] r <0|1>           repeat twist every 1.5 s\n");
+  printf("[cmd] kb <b1> [b2]      0x3F button bytes hex (30 = SL+SR, 01 = A)\n");
+  printf("[cmd] kb30 <b4> [b5]    0x30 button bytes hex (08 = A in b4)\n");
   printf("[cmd] p                 show twist curve parameters\n");
   printf("[cmd] i                 status\n");
 }
@@ -113,6 +135,20 @@ static void handleCmd(const char* line) {
     if ((tok = strtok_r(nullptr, " \t", &save))) g_repeat = atoi(tok) != 0;
     g_next_repeat_us = 0;
     printf("[cmd] repeat %s\n", g_repeat ? "on" : "off");
+  } else if (!strcmp(tok, "kb")) {  // 0x3F simple-mode button bytes (hex)
+    long v1 = g_kb1, v2 = g_kb2;
+    if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
+    if ((tok = strtok_r(nullptr, " \t", &save))) v2 = strtol(tok, nullptr, 16);
+    g_kb1 = (uint8_t)v1;
+    g_kb2 = (uint8_t)v2;
+    printf("[cmd] 3F btn b1=%02X b2=%02X\n", g_kb1, g_kb2);
+  } else if (!strcmp(tok, "kb30")) {  // 0x30 full-mode button bytes 4/5 (hex)
+    long v1 = g_30_b4, v2 = g_30_b5;
+    if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
+    if ((tok = strtok_r(nullptr, " \t", &save))) v2 = strtol(tok, nullptr, 16);
+    g_30_b4 = (uint8_t)v1;
+    g_30_b5 = (uint8_t)v2;
+    printf("[cmd] 30 btn b4=%02X b5=%02X\n", g_30_b4, g_30_b5);
   } else if (!strcmp(tok, "p")) {
     printf("[cfg] out=%.1f deg/%u ms (peak %.0f dps) hold=%u ms\n",
                   motion.cfg.out_angle_deg, (unsigned)motion.cfg.out_ms,
@@ -165,6 +201,11 @@ static void cliTask(void*) {
 
 extern "C" void app_main(void) {
   JCLOG("[ringcon] Joy-Con R classic BT emulator (IDF)\n");
+  gpio_config_t io = {};  // BOOT key as a general input (physical A fallback)
+  io.pin_bit_mask = 1ULL << GPIO_NUM_0;
+  io.mode = GPIO_MODE_INPUT;
+  io.pull_up_en = GPIO_PULLUP_ENABLE;
+  gpio_config(&io);
   transport.begin("Joy-Con (R)", 0x02);
   xTaskCreatePinnedToCore(reportTask, "rpt30", 4096, nullptr, 5, nullptr, 0);
   xTaskCreate(cliTask, "cli", 4096, nullptr, 3, nullptr);

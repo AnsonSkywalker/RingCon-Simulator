@@ -27,10 +27,15 @@ const size_t kSpiReplyMax = 0x1D;
 
 size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
                             const ReportPacker& packer, uint8_t* out51) {
-  // Some hosts prepend the report-id byte (0xA2 outputs use id 0x01); accept
-  // both "id + payload" and "payload only" framings.
+  // Switch 2 sends fixed 48-byte output reports WITHOUT a report-id byte
+  // (on-device verified 2026-09-08): [counter][rumble*8][subcmd][args..].
+  // The old heuristic stripped a leading 0x01/0x10/0x11/0x12 as a "report
+  // id", which on Switch 2 corrupted every frame whose counter byte hit
+  // those values - the host then got a garbage reply and retried forever.
+  // Only try the id-strip for non-48-byte (Switch 1 style) frames.
   const uint8_t* p = v;
-  if (n > 0 && (p[0] == 0x01 || p[0] == 0x10 || p[0] == 0x11 || p[0] == 0x12)) {
+  if (n != 48 && n > 0 &&
+      (p[0] == 0x01 || p[0] == 0x10 || p[0] == 0x11 || p[0] == 0x12)) {
     p++;
     n--;
   }
@@ -43,7 +48,7 @@ size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
   size_t argn = n > 10 ? n - 10 : 0;
   JCLOG("[sub] 0x%02x (args %u)\n", sub, (unsigned)argn);
 
-  uint8_t reply[kSpiReplyMax];
+  uint8_t reply[kSpiReplyMax] = {0};
   size_t len = 0;
   switch (sub) {
     case 0x02: {  // REQUEST_DEVICE_INFO: fw(2) type(1) 0x02 mac(6) 0x01 0x01
@@ -92,7 +97,8 @@ size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
 
   uint8_t ack = ackFor(sub);
   ReportState idle;  // static buttons/sticks, IMU zeroed in 0x21 replies
-  return packer.pack0x21(out51, idle, 0, ack, sub,
+  static uint8_t s_timer = 1;  // 0x21 timer: free-running like the real thing
+  return packer.pack0x21(out51, idle, s_timer++, ack, sub,
                          {reply + 0, reply + len});
 }
 

@@ -11,7 +11,10 @@ namespace joycon {
 
 struct SubCmdState {
   bool imu_enabled = false;
-  uint8_t report_mode = 0x30;
+  // 0x3F (simple HID) is the real power-on report mode; the host must send
+  // subcmd 0x03 with 0x30 before any full input reports flow. Streaming
+  // 0x30 unsolicited derails the Switch 2 handshake (2026-09-08 finding).
+  uint8_t report_mode = 0x3F;
   uint8_t joycon_type = 0x02;  // 0x02 = Joy-Con R
   uint8_t mac[6] = {0, 0, 0, 0, 0, 0};  // transport fills (little-endian native)
 };

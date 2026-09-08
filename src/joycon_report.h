@@ -64,6 +64,8 @@ class SpiFlash {
   static constexpr uint32_t kDevTypeAddr = 0x6012;
   static constexpr uint32_t kStickCalAddr = 0x603D;
   static constexpr uint32_t kStickCalRAddr = 0x6046;
+  static constexpr uint32_t kColorExistAddr = 0x601B;
+  static constexpr uint32_t kColorAddr = 0x6050;
 };
 
 }  // namespace joycon

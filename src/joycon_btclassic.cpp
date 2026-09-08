@@ -35,6 +35,9 @@ struct BtClassicHooks {
           esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
                                    ESP_BT_NON_DISCOVERABLE);
           JCLOG("[bt] connected\n");
+        } else if (param->open.status != ESP_HIDD_SUCCESS) {
+          JCLOG("[bt] open evt, status=%d conn=%d\n", param->open.status,
+                        param->open.conn_status);
         }
         break;
       case ESP_HIDD_CLOSE_EVT:
@@ -53,6 +56,34 @@ struct BtClassicHooks {
                       param->report_err.status);
         break;
       default:
+        // app registration, control-channel data, suspend/resume, ...
+        // (6 = SEND_REPORT echo of our own 66 Hz stream - too noisy to print)
+        if ((int)event != 6) JCLOG("[bt] hidd evt %d\n", (int)event);
+        break;
+    }
+  }
+
+  // Observability for pairing: the Switch's connect attempts show up here
+  // (ACL up/down, SSP events) even when the HID channels fail.
+  static void onGapEvent(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) {
+    switch (event) {
+      case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+        JCLOG("[gap] acl connected, st=%d\n",
+                      param->acl_conn_cmpl_stat.stat);
+        break;
+      case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+        JCLOG("[gap] acl disconnected, reason=0x%x\n",
+                      param->acl_disconn_cmpl_stat.reason);
+        break;
+      case ESP_BT_GAP_AUTH_CMPL_EVT:
+        JCLOG("[gap] auth complete, stat=%d key_type=%d\n",
+                      param->auth_cmpl.stat, param->auth_cmpl.lk_type);
+        break;
+      case ESP_BT_GAP_ENC_CHG_EVT:
+        JCLOG("[gap] encryption mode=%d\n", param->enc_chg.enc_mode);
+        break;
+      default:
+        JCLOG("[gap] evt %d\n", (int)event);
         break;
     }
   }
@@ -101,6 +132,10 @@ void JoyConBtClassic::begin(const char* name, uint8_t joycon_type) {
   cod.major = 5;
   cod.service = 1;
   esp_bt_gap_set_cod(cod, ESP_BT_SET_COD_ALL);
+  // NoInputNoOutput -> SSP Just Works, same as the real Joy-Con
+  uint8_t io_cap = ESP_BT_IO_CAP_NONE;
+  esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &io_cap, sizeof(io_cap));
+  esp_bt_gap_register_callback(&BtClassicHooks::onGapEvent);
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
   JCLOG("[bt] discoverable as %s\n", name);
 }
@@ -114,10 +149,32 @@ void JoyConBtClassic::notify30(const ReportState (&st)[3], uint8_t timer,
   esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, 0x30, 48, buf + 2);
 }
 
+void JoyConBtClassic::notify3F(uint8_t btn1, uint8_t btn2) {
+  if (!connected_) return;
+  // [0xA1][0x3F][btn1][btn2][hat=8 center][filler 00 80 00 80 00 80 00 80]
+  uint8_t buf[13] = {0xA1, 0x3F, btn1, btn2, 0x08,
+                     0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80};
+  esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, 0x3F, 11,
+                                buf + 2);
+}
+
 void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
+  // Wire diagnosis: dump what the host actually sends after the stack strips
+  // the 0xA2 DATA-OUTPUT transaction header (Switch 2 framing unknown at the
+  // time of writing - its frames ran 10 bytes longer than Switch 1's).
+  char hex[3 * 34 + 1];
+  size_t m = n < 16 ? n : 16;
+  for (size_t i = 0; i < m; i++) sprintf(hex + 3 * i, "%02X ", v[i]);
+  hex[3 * m] = 0;
+  JCLOG("[rx] n=%u %s\n", (unsigned)n, hex);
+
   uint8_t out51[51];
   size_t len = dispatchOutputReport(v, n, st_, packer_, out51);
   if (len > 0 && connected_) {
+    size_t t = len < 34 ? len : 34;
+    for (size_t i = 0; i < t; i++) sprintf(hex + 3 * i, "%02X ", out51[i]);
+    hex[3 * t] = 0;
+    JCLOG("[tx] l=%u %s\n", (unsigned)len, hex);
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, 0x21,
                                   static_cast<uint16_t>(len - 2), out51 + 2);
   }

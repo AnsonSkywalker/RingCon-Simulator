@@ -6,6 +6,18 @@
 
 namespace joycon {
 
+// Colors MUST match the claimed controller type: Switch 2 rejects a Joy-Con R
+// wearing Pro-gray (UARTSwitchCon's 0x232323 passes on Switch 1 but loops
+// forever on Switch 2, 2026-09-08). Values = official Neon Red (#FF4554)
+// body/grips, dark buttons; 0x605C-0x605D unknown = 0.
+static const uint8_t kColors[14] = {0xFF, 0x45, 0x54, 0x25, 0x26, 0x26,
+                                    0xFF, 0x45, 0x54, 0xFF, 0x45, 0x54,
+                                    0x00, 0x00};
+// 0x603D L-stick(9) + 0x6046 R-stick(9) factory calibration
+static const uint8_t kSticks18[18] = {0x00, 0x07, 0x70, 0x00, 0x08, 0x80,
+                                      0x00, 0x07, 0x70, 0x00, 0x08, 0x80,
+                                      0x00, 0x07, 0x70, 0x00, 0x07, 0x70};
+
 static void put16le(uint8_t* p, int16_t v) {
   p[0] = (uint8_t)(v & 0xFF);
   p[1] = (uint8_t)((v >> 8) & 0xFF);
@@ -72,25 +84,43 @@ size_t ReportPacker::pack0x21(uint8_t* buf, const ReportState& s, uint8_t timer,
   buf[15] = subcmd_id;
   size_t n = reply.size() < 35 ? reply.size() : 35;
   memcpy(buf + 16, reply.data(), n);
+  memset(buf + 16 + n, 0, 35 - n);  // real frames end in zeros, not stack garbage
   return 51;  // 0xA1 + id + timer + battery + btns + sticks + vib + ack + subid + 35
 }
 
 bool SpiFlash::read(uint32_t addr, uint8_t* out, uint8_t len) const {
   memset(out, 0xFF, len);
-  if (addr == kStickCalAddr && len == 9) {
-    // 0x603D..0x6045 = L-stick factory cal (9 bytes); R-stick starts at 0x6046
-    static const uint8_t l[9] = {0x00, 0x07, 0x70, 0x00, 0x08, 0x80, 0x00, 0x07, 0x70};
-    memcpy(out, l, 9);
+  if (addr == kStickCalAddr && len <= 27) {
+    // 0x603D..0x6057 composite: L-stick cal(9) + R-stick cal(9) + 0x604F
+    // unknown + body/buttons colors(6). The host reads this range both as
+    // 9-byte stick cal and as a 25-byte block spanning into the colors
+    // (UARTSwitchCon captured reads of size 0x19), so serve the whole span.
+    uint8_t img[27];
+    memcpy(img, kSticks18, 18);
+    img[18] = 0x00;               // 0x604F unknown
+    memcpy(img + 19, kColors, 6); // 0x6050 body + 0x6053 buttons
+    memcpy(out, img, len);
     return true;
   }
   if (addr == kStickCalRAddr && len == 9) {
     // 0x6046..0x604E = R-stick factory cal; a Joy-Con R gets asked for this
-    static const uint8_t r[9] = {0x00, 0x08, 0x80, 0x00, 0x07, 0x70, 0x00, 0x07, 0x70};
-    memcpy(out, r, 9);
+    memcpy(out, kSticks18 + 9, 9);
     return true;
   }
   if (addr == kDevTypeAddr && len == 1) {
     out[0] = 0x02;  // Joy-Con R
+    return true;
+  }
+  if (addr == kColorExistAddr && len == 1) {
+    out[0] = 0x01;  // color info exists (else the host may distrust the colors)
+    return true;
+  }
+  if (addr == kColorAddr && len >= 12 && len <= 14) {
+    // Body/buttons/left-grip/right-grip RGB. Switch 2 (unlike Switch 1)
+    // rejects the all-0xFF "blank" colors joycontrol gets away with and
+    // retries the 0x6050 read forever - 2026-09-08 on-device finding.
+    // Values = UARTSwitchCon's field-tested body/buttons/grips set.
+    memcpy(out, kColors, len);
     return true;
   }
   if (addr == kImuCalAddr && len == 24) {
