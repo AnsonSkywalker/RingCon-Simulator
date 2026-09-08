@@ -30,8 +30,8 @@ MODES = {
     "0x3F": {
         "A": (1, 0x01), "X": (1, 0x02), "B": (1, 0x04), "Y": (1, 0x08),
         "SL": (1, 0x10), "SR": (1, 0x20),
-        "Minus": (2, 0x01), "Plus": (2, 0x02), "Home": (2, 0x10),
-        "Capture": (2, 0x20), "R": (2, 0x40), "ZR": (2, 0x80),
+        "Minus": (2, 0x01), "Plus": (2, 0x02), "RStick": (2, 0x04),
+        "Home": (2, 0x10), "Capture": (2, 0x20), "R": (2, 0x40), "ZR": (2, 0x80),
     },
     "0x30": {
         "A": (4, 0x08), "X": (4, 0x02), "B": (4, 0x04), "Y": (4, 0x01),
@@ -44,9 +44,15 @@ MODES = {
 state = {"0x3F": {1: 0, 2: 0}, "0x30": {4: 0, 5: 0}}
 mode = "0x3F"
 
-ser = serial.Serial(PORT, BAUD, timeout=0.1)
-ser.setDTR(False)  # keep the board out of download/reset states
-ser.setRTS(False)
+ser = serial.Serial()
+ser.port = PORT
+ser.baudrate = BAUD
+ser.timeout = 0.1
+ser.dsrdtr = False  # do not toggle DTR on open -> board stays out of reset
+ser.rtscts = False
+ser.dtr = False
+ser.rts = False
+ser.open()
 ser.reset_input_buffer()
 
 root = tk.Tk()
