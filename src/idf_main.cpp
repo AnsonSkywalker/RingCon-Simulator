@@ -34,14 +34,16 @@ static int64_t now_us() { return esp_timer_get_time(); }
 // Real Joy-Con sleep/wake semantics: rst makes the device vanish from the air
 // (host must re-scan to find it); any later command wakes it (re-advertise).
 static bool g_asleep = false;
+static int64_t g_last_reconnect_us = 0;  // rate-limit page retries
 
 static void wake() {
   if (!g_asleep) return;
   g_asleep = false;
+  transport.setHidden(false);
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
   // real Joy-Con wake = page the host and re-establish the link (uses the
   // stored link key, no re-pairing); this is how "permanent reconnect" works
-  if (!transport.connected() && transport.reconnect())
+  if (!transport.connected() && transport.haveHost() && transport.reconnect())
     JCLOG("[cmd] awake, paging host to reconnect\n");
   else
     JCLOG("[cmd] awake, discoverable\n");
@@ -108,6 +110,20 @@ static void reportTask(void*) {
       motion.armTwist();
       g_next_repeat_us = now_us() + 1500000;
     }
+    // device-initiated page-back retry: when disconnected but bonded, ring
+    // the host every 3 s until it links (or while asleep: skipped below)
+    if (!transport.connected() && !g_asleep) {
+      if (transport.pagingStale(now_us())) {
+        transport.clearStalePage();  // failed page emits no event
+        JCLOG("[cmd] page stale, cleared\n");
+      }
+      if (transport.haveHost() &&
+          now_us() - g_last_reconnect_us > 3000000) {
+        g_last_reconnect_us = now_us();
+        bool ok = transport.reconnect();
+        JCLOG("[cmd] page retry ok=%d\n", ok);
+      }
+    }
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(15));
   }
 }
@@ -128,9 +144,9 @@ static void printHelp() {
 }
 
 static void printStatus() {
-  printf("[st] bt: connected=%d mode=0x%02x imu=%d reports=%u\n",
+  printf("[st] bt: connected=%d mode=0x%02x imu=%d reports=%u host=%d\n",
                 transport.connected(), transport.reportMode(),
-                transport.imuEnabled(), (unsigned)g_reports);
+                transport.imuEnabled(), (unsigned)g_reports, transport.haveHost());
   printf("[st] orient: w=%.2f x=%.2f y=%.2f z=%.2f\n",
                 motion.orient()[0], motion.orient()[1], motion.orient()[2],
                 motion.orient()[3]);
@@ -215,6 +231,7 @@ static void handleCmd(const char* line) {
       }
     }
   } else if (!strcmp(tok, "rst")) {  // real-JoyCon sleep: vanish from the air
+    transport.setHidden(true);   // so CLOSE_EVT won't re-advertise
     transport.disconnect();
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
                              ESP_BT_NON_DISCOVERABLE);

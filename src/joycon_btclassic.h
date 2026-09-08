@@ -30,6 +30,12 @@ class JoyConBtClassic {
   // rings back the last host over BR/EDR using the stored link key - this is
   // how "one pairing, permanent reconnect" actually works on the wire.
   bool reconnect();
+  void setHidden(bool h) { hidden_ = h; }  // sleep: don't re-advertise on CLOSE
+  bool haveHost() const { return have_host_; }
+  bool pagingStale(int64_t now_us) const {
+    return paging_ && now_us - page_sent_us_ > 5000000;
+  }
+  void clearStalePage() { paging_ = false; }
   bool connected() const { return connected_; }
   // Classic HID has no CCCD: once the L2CAP interrupt channel is up, reports
   // simply flow. Kept for parity with the BLE transport's interface.
@@ -43,12 +49,17 @@ class JoyConBtClassic {
  private:
   friend struct BtClassicHooks;
   void handleOutput(const uint8_t* v, size_t n);
+  void hostSave();   // persist last_host_ in NVS (survive reboots)
+  void hostLoad();   // restore on boot
 
   ReportPacker packer_;
   SubCmdState st_;
   volatile bool connected_ = false;
   uint8_t last_host_[6] = {0};
   bool have_host_ = false;
+  bool hidden_ = false;      // sleep state: CLOSE must not re-advertise
+  bool paging_ = false;      // device-initiated page in flight
+  int64_t page_sent_us_ = 0;  // when the page was issued (stale-clear)
 };
 
 }  // namespace joycon

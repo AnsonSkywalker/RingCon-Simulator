@@ -17,6 +17,7 @@
 #include <esp_bt_device.h>
 #include <esp_gap_bt_api.h>
 #include <esp_hidd_api.h>
+#include <esp_timer.h>
 
 namespace joycon {
 
@@ -31,13 +32,16 @@ struct BtClassicHooks {
         if (param->open.status == ESP_HIDD_SUCCESS &&
             param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED) {
           g_self->connected_ = true;
+          g_self->paging_ = false;
           memcpy(g_self->last_host_, param->open.bd_addr, 6);
           g_self->have_host_ = true;  // remember the host for later page-back
+          g_self->hostSave();         // persist across reboots
           // one host is enough; stop being discoverable while linked
           esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
                                    ESP_BT_NON_DISCOVERABLE);
           JCLOG("[bt] connected\n");
         } else if (param->open.status != ESP_HIDD_SUCCESS) {
+          g_self->paging_ = false;
           JCLOG("[bt] open evt, status=%d conn=%d\n", param->open.status,
                         param->open.conn_status);
         }
@@ -45,13 +49,18 @@ struct BtClassicHooks {
       case ESP_HIDD_CLOSE_EVT:
         if (param->close.conn_status != ESP_HIDD_CONN_STATE_CONNECTED) {
           g_self->connected_ = false;
+          g_self->paging_ = false;
           // real Joy-Con semantics: after a link drop the controller wakes up
           // clean - the host re-runs the full handshake (mode/IMU) from zero
           g_self->st_.report_mode = 0x3F;
           g_self->st_.imu_enabled = false;
-          esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE,
-                                   ESP_BT_GENERAL_DISCOVERABLE);
-          JCLOG("[bt] disconnected (state reset), discoverable again\n");
+          // while asleep (rst) stay off the air; otherwise re-advertise so a
+          // scanning host can find us (first-ever pairing has no host to page)
+          if (!g_self->hidden_)
+            esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE,
+                                     ESP_BT_GENERAL_DISCOVERABLE);
+          JCLOG("[bt] disconnected (state reset)%s\n",
+                        g_self->hidden_ ? ", asleep" : ", discoverable");
         }
         break;
       case ESP_HIDD_INTR_DATA_EVT:
@@ -143,6 +152,7 @@ void JoyConBtClassic::begin(const char* name, uint8_t joycon_type) {
   esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &io_cap, sizeof(io_cap));
   esp_bt_gap_register_callback(&BtClassicHooks::onGapEvent);
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  hostLoad();  // restore a previously-bonded host for instant page-back
   JCLOG("[bt] discoverable as %s\n", name);
 }
 
@@ -169,9 +179,38 @@ void JoyConBtClassic::disconnect() {
 }
 
 bool JoyConBtClassic::reconnect() {
-  if (connected_ || !have_host_) return false;
-  // device-originated connect: page the last host, reuse the bonded link key
-  return esp_bt_hid_device_connect(last_host_) == ESP_OK;
+  if (connected_ || !have_host_ || paging_) return false;
+  paging_ = true;  // one page in flight; OPEN/CLOSE clears it
+  page_sent_us_ = (int64_t)esp_timer_get_time();
+  esp_err_t rc = esp_bt_hid_device_connect(last_host_);
+  if (rc != ESP_OK) {
+    paging_ = false;
+    JCLOG("[bt] page host rc=%d\n", rc);
+  }
+  return rc == ESP_OK;
+}
+
+void JoyConBtClassic::hostSave() {
+  nvs_handle_t h;
+  if (nvs_open("ringcon", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_set_blob(h, "host", last_host_, 6);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+}
+
+void JoyConBtClassic::hostLoad() {
+  nvs_handle_t h;
+  if (nvs_open("ringcon", NVS_READONLY, &h) == ESP_OK) {
+    size_t len = 6;
+    if (nvs_get_blob(h, "host", last_host_, &len) == ESP_OK && len == 6)
+      have_host_ = true;
+    nvs_close(h);
+  }
+  if (have_host_)
+    JCLOG("[bt] loaded last host from NVS: %02X:%02X:%02X:%02X:%02X:%02X\n",
+          last_host_[0], last_host_[1], last_host_[2],
+          last_host_[3], last_host_[4], last_host_[5]);
 }
 
 void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
