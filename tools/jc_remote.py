@@ -23,8 +23,6 @@ BAUD = 115200
 # Right Joy-Con real buttons. Name -> press command.
 BUTTONS = ["A", "B", "X", "Y", "SL", "SR", "R", "ZR", "Plus", "RStick", "Home"]
 
-latch = tk.BooleanVar(value=True)
-
 ser = serial.Serial()
 ser.port = PORT
 ser.baudrate = BAUD
@@ -39,6 +37,7 @@ ser.reset_input_buffer()
 root = tk.Tk()
 root.title(f"Joy-Con (R) Remote -> {PORT}")
 
+latch = tk.BooleanVar(value=True)
 held = set()  # currently-latched buttons
 
 
