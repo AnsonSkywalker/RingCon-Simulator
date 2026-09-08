@@ -17,20 +17,25 @@ import serial
 PORT = sys.argv[1] if len(sys.argv) > 1 else "COM5"
 BAUD = 115200
 
-# Bit maps (dekuNukem simple-HID + full report layouts, sideways right
-# Joy-Con: physical face buttons map to the d-pad bits in 0x3F byte 1).
+# Bit maps. 0x30 = full report, raw layout verified against joycontrol's
+# ButtonState (controller_state.py, field-tested on Switch 1):
+#   byte4: Y X B A SR SL R ZR (bit0..7)   byte5: Minus Plus RStick LStick
+#   Home Capture (bit0..5)
+# 0x3F = simple HID (pre-pairing grip screen only - once the host switches us
+# to 0x30 it ignores 0x3F reports). Sideways right JC maps its face buttons to
+# the d-pad bits of byte 1; that mapping is a guess, not yet screen-verified.
 MODES = {
     "0x3F": {
-        "A(Down)": (1, 0x01), "X(Right)": (1, 0x02), "B(Left)": (1, 0x04),
-        "Y(Up)": (1, 0x08), "SL": (1, 0x10), "SR": (1, 0x20),
+        "A": (1, 0x01), "X": (1, 0x02), "B": (1, 0x04), "Y": (1, 0x08),
+        "SL": (1, 0x10), "SR": (1, 0x20),
         "Minus": (2, 0x01), "Plus": (2, 0x02), "Home": (2, 0x10),
         "Capture": (2, 0x20), "R": (2, 0x40), "ZR": (2, 0x80),
     },
     "0x30": {
         "A": (4, 0x08), "X": (4, 0x02), "B": (4, 0x04), "Y": (4, 0x01),
-        "SL": (4, 0x10), "SR": (4, 0x20),
-        "Minus": (5, 0x01), "Plus": (5, 0x02), "Home": (5, 0x10),
-        "Capture": (5, 0x20), "R": (5, 0x40), "ZR": (5, 0x80),
+        "SR": (4, 0x10), "SL": (4, 0x20), "R": (4, 0x40), "ZR": (4, 0x80),
+        "Minus": (5, 0x01), "Plus": (5, 0x02), "RStick": (5, 0x04),
+        "Home": (5, 0x10), "Capture": (5, 0x20),
     },
 }
 # state[mode][byte] = accumulated bits for that report byte
@@ -106,12 +111,12 @@ tk.Checkbutton(top, text="Latch (click = toggle)", variable=latch).pack(
 grid = tk.Frame(root)
 grid.pack(padx=10, pady=10)
 layout = [
-    ["", "Y(Up)", "", ""],
-    ["X(Right)", "", "A(Down)", ""],
-    ["", "B(Left)", "", ""],
+    ["", "Y", "", ""],
+    ["X", "", "A", ""],
+    ["", "B", "", ""],
     ["SL", "", "SR", ""],
     ["Minus", "Home", "Plus", "Capture"],
-    ["R", "ZR", "", ""],
+    ["R", "ZR", "RStick", ""],
 ]
 btns = {}
 for r, row in enumerate(layout):
@@ -148,11 +153,12 @@ def raw_send(*_):
 raw_entry.bind("<Return>", raw_send)
 tk.Button(raw_row, text="Send", command=raw_send).pack(side=tk.LEFT)
 
-tk.Label(root, text="Latch on: click = toggle (hold several at once).\n"
+tk.Label(root, text="0x30 = normal mode (system settings / in-game) - use this.\n"
+                    "0x3F = pre-pairing grip screen only; the host ignores 0x3F\n"
+                    "reports once it has switched us to 0x30.\n"
+                    "Latch on: click = toggle (hold several at once).\n"
                     "Latch off: mouse-hold = button held.\n"
-                    "If the screen ignores A(Down), try X(Right)/B(Left)/Y(Up):\n"
-                    "the sideways face-button mapping is not verified yet.\n"
-                    "Raw cmd examples: t 100 360 | y 1 -1 | s 0.07 | kb 30",
+                    "Raw cmd examples: t 100 360 | y 1 -1 | s 0.07 | kb30 08",
          justify=tk.LEFT).pack(pady=4)
 
 send()

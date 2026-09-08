@@ -14,11 +14,14 @@ struct ImuFrame {  // 12 bytes on the wire: acc xyz, gyro xyz, int16 LE
   int16_t gyro[3];
 };
 
-// Buttons as seen by Joy-Con (R) held sideways (rail down), per dekuNukem bit map
+// Raw 0x30 button bits (report bytes 4/5), per joycontrol ButtonState /
+// dekuNukem: byte4 = Y X B A SR SL R ZR, byte5 = Minus Plus RStick LStick
+// Home Capture (bit0..5); byte6 (unused here) carries the Pro/L-JC d-pad.
 enum JoyConRButtons : uint32_t {
   BTN_Y = 1u << 0, BTN_X = 1u << 1, BTN_B = 1u << 2, BTN_A = 1u << 3,
-  BTN_SR = 1u << 4, BTN_SL = 1u << 5, BTN_R = 1u << 6, BTN_PLUS = 1u << 7,
-  BTN_STICK = 1u << 8, BTN_HOME = 1u << 9, BTN_CHARGING = 1u << 10,
+  BTN_SR = 1u << 4, BTN_SL = 1u << 5, BTN_R = 1u << 6, BTN_ZR = 1u << 7,
+  BTN_MINUS = 1u << 8, BTN_PLUS = 1u << 9, BTN_R_STICK = 1u << 10,
+  BTN_L_STICK = 1u << 11, BTN_HOME = 1u << 12, BTN_CAPTURE = 1u << 13,
 };
 
 struct ReportState {
