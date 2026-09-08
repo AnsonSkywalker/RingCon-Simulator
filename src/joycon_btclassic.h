@@ -26,6 +26,10 @@ class JoyConBtClassic {
   // Simulate Home-held sleep: drop the HID connection (Switch icon goes
   // away); we stay discoverable so any later pairing attempt re-links.
   void disconnect();
+  // Device-initiated page (real Joy-Con "press any key to reconnect"):
+  // rings back the last host over BR/EDR using the stored link key - this is
+  // how "one pairing, permanent reconnect" actually works on the wire.
+  bool reconnect();
   bool connected() const { return connected_; }
   // Classic HID has no CCCD: once the L2CAP interrupt channel is up, reports
   // simply flow. Kept for parity with the BLE transport's interface.
@@ -43,6 +47,8 @@ class JoyConBtClassic {
   ReportPacker packer_;
   SubCmdState st_;
   volatile bool connected_ = false;
+  uint8_t last_host_[6] = {0};
+  bool have_host_ = false;
 };
 
 }  // namespace joycon

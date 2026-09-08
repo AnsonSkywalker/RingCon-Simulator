@@ -31,6 +31,8 @@ struct BtClassicHooks {
         if (param->open.status == ESP_HIDD_SUCCESS &&
             param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED) {
           g_self->connected_ = true;
+          memcpy(g_self->last_host_, param->open.bd_addr, 6);
+          g_self->have_host_ = true;  // remember the host for later page-back
           // one host is enough; stop being discoverable while linked
           esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
                                    ESP_BT_NON_DISCOVERABLE);
@@ -43,9 +45,13 @@ struct BtClassicHooks {
       case ESP_HIDD_CLOSE_EVT:
         if (param->close.conn_status != ESP_HIDD_CONN_STATE_CONNECTED) {
           g_self->connected_ = false;
+          // real Joy-Con semantics: after a link drop the controller wakes up
+          // clean - the host re-runs the full handshake (mode/IMU) from zero
+          g_self->st_.report_mode = 0x3F;
+          g_self->st_.imu_enabled = false;
           esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE,
                                    ESP_BT_GENERAL_DISCOVERABLE);
-          JCLOG("[bt] disconnected, discoverable again\n");
+          JCLOG("[bt] disconnected (state reset), discoverable again\n");
         }
         break;
       case ESP_HIDD_INTR_DATA_EVT:
@@ -160,6 +166,12 @@ void JoyConBtClassic::notify3F(uint8_t btn1, uint8_t btn2) {
 
 void JoyConBtClassic::disconnect() {
   if (connected_) esp_bt_hid_device_disconnect();
+}
+
+bool JoyConBtClassic::reconnect() {
+  if (connected_ || !have_host_) return false;
+  // device-originated connect: page the last host, reuse the bonded link key
+  return esp_bt_hid_device_connect(last_host_) == ESP_OK;
 }
 
 void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {

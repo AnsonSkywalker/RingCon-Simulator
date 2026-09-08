@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "esp_gap_bt_api.h"
 #include "esp_timer.h"
 #include "jc_log.h"
 #include "joycon_btclassic.h"
@@ -29,6 +30,22 @@ static uint8_t g_kb1 = 0, g_kb2 = 0;
 static uint8_t g_30_b4 = 0, g_30_b5 = 0;
 
 static int64_t now_us() { return esp_timer_get_time(); }
+
+// Real Joy-Con sleep/wake semantics: rst makes the device vanish from the air
+// (host must re-scan to find it); any later command wakes it (re-advertise).
+static bool g_asleep = false;
+
+static void wake() {
+  if (!g_asleep) return;
+  g_asleep = false;
+  esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  // real Joy-Con wake = page the host and re-establish the link (uses the
+  // stored link key, no re-pairing); this is how "permanent reconnect" works
+  if (!transport.connected() && transport.reconnect())
+    JCLOG("[cmd] awake, paging host to reconnect\n");
+  else
+    JCLOG("[cmd] awake, discoverable\n");
+}
 
 // Abstract button -> report bit routing. The frontend never mentions report
 // modes; whichever phase the host put us in (0x3F grip screen / 0x30 full)
@@ -131,6 +148,7 @@ static void handleCmd(const char* line) {
   char* save = nullptr;
   char* tok = strtok_r(buf, " \t", &save);
   if (!tok) return;
+  wake();  // any command = wake from sleep (real Joy-Con behavior)
   if (!strcmp(tok, "h")) {
     printHelp();
   } else if (!strcmp(tok, "t")) {
@@ -196,9 +214,13 @@ static void handleCmd(const char* line) {
                       transport.reportMode(), transport.connected() ? "" : " (queued, not connected)");
       }
     }
-  } else if (!strcmp(tok, "rst")) {  // real-JoyCon behavior: sleep & unlink
+  } else if (!strcmp(tok, "rst")) {  // real-JoyCon sleep: vanish from the air
     transport.disconnect();
-    printf("[cmd] sleeping (disconnecting; any pairing attempt relinks)\n");
+    esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
+                             ESP_BT_NON_DISCOVERABLE);
+    g_kb1 = g_kb2 = g_30_b4 = g_30_b5 = 0;  // sleep clears pressed buttons
+    g_asleep = true;
+    printf("[cmd] sleeping (vanished from air; any key wakes)\n");
   } else if (!strcmp(tok, "gr")) {  // smooth orientation return to face-up
     motion.armReset();
     printf("[cmd] orientation reset\n");
