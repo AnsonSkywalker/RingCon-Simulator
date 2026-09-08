@@ -10,6 +10,8 @@
 # NOTE: this script owns the serial port - close it before flashing or
 # watching the log with another tool.
 import sys
+import threading
+import time
 import tkinter as tk
 
 import serial
@@ -152,6 +154,78 @@ def raw_send(*_):
 
 raw_entry.bind("<Return>", raw_send)
 tk.Button(raw_row, text="Send", command=raw_send).pack(side=tk.LEFT)
+
+# ---- motion panel: one-shot firmware commands (work while in 0x30 stream) ----
+motion = tk.LabelFrame(root, text="体感 Motion (游戏内 0x30 流)")
+motion.pack(fill=tk.X, padx=10, pady=4)
+
+
+def send_cmd(cmd):
+    ser.write((cmd + "\n").encode())
+    status.config(text=f"sent: {cmd}")
+
+
+rot_row = tk.Frame(motion)
+rot_row.pack(pady=2)
+tk.Label(rot_row, text="轴向旋转90°:").pack(side=tk.LEFT, padx=2)
+for label, cmd in [("X+", "rot 0 1"), ("X-", "rot 0 -1"), ("Y+", "rot 1 1"),
+                   ("Y-", "rot 1 -1"), ("Z+", "rot 2 1"), ("Z-", "rot 2 -1")]:
+    tk.Button(rot_row, text=label, width=4,
+              command=lambda c=cmd: send_cmd(c)).pack(side=tk.LEFT, padx=2)
+
+act_row = tk.Frame(motion)
+act_row.pack(pady=2)
+tk.Button(act_row, text="重置体感 (面朝上平放)", width=18,
+          command=lambda: send_cmd("rst")).pack(side=tk.LEFT, padx=4)
+tk.Button(act_row, text="左扭腰90°", width=9,
+          command=lambda: send_cmd("tl")).pack(side=tk.LEFT, padx=4)
+tk.Button(act_row, text="右扭腰90°", width=9,
+          command=lambda: send_cmd("tr")).pack(side=tk.LEFT, padx=4)
+
+auto_var = tk.BooleanVar(value=True)
+
+
+def toggle_auto():
+    send_cmd("r 1" if auto_var.get() else "r 0")
+
+
+tk.Checkbutton(motion, text="每1.5s自动扭腰", variable=auto_var,
+               command=toggle_auto).pack(side=tk.LEFT, padx=8)
+tk.Label(motion, text="轴向 X/Y/Z = 手柄本体系，方向含义待游戏内确认").pack(
+    side=tk.LEFT, padx=4)
+
+# ---- background serial reader: show the last firmware response ----
+rx_line = {"text": ""}
+
+
+def reader():
+    buf = b""
+    while True:
+        try:
+            n = ser.in_waiting
+            if n:
+                buf += ser.read(n)
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    rx_line["text"] = line.decode(errors="replace").strip()
+            else:
+                time.sleep(0.02)
+        except Exception:
+            break  # port closed -> frontend is exiting
+
+
+threading.Thread(target=reader, daemon=True).start()
+rx_label = tk.Label(root, text="rx: -", font=("Consolas", 9), fg="#555")
+rx_label.pack(anchor=tk.W, padx=12)
+
+
+def poll_rx():
+    if rx_line["text"]:
+        rx_label.config(text="rx: " + rx_line["text"])
+    root.after(200, poll_rx)
+
+
+root.after(200, poll_rx)
 
 tk.Label(root, text="0x30 = normal mode (system settings / in-game) - use this.\n"
                     "0x3F = pre-pairing grip screen only; the host ignores 0x3F\n"

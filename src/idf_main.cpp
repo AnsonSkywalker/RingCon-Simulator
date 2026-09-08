@@ -36,25 +36,26 @@ static bool bootPressed() { return gpio_get_level(GPIO_NUM_0) == 0; }
 static void reportTask(void*) {
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
-    if (transport.connected()) {
-      if (transport.reportMode() == 0x30) {
-        joycon::ReportState frames[3];
-        uint32_t btn = (uint32_t)g_30_b4 | ((uint32_t)g_30_b5 << 8);
-        if (bootPressed()) btn |= 0x08;  // physical A in full mode
-        for (int i = 0; i < 3; i++) {
-          frames[i] = joycon::ReportState{};
-          frames[i].buttons = btn;
-          if (g_motion_on) motion.tick(5, frames[i]);
-        }
-        transport.notify30(frames, g_timer++, transport.imuEnabled());
-        g_reports++;
-      } else if (transport.reportMode() == 0x3F) {
-        // Pre-handshake simple mode: buttons come from the PC frontend
-        // (tools/jc_remote.py) via 'kb'; BOOT key = momentary A.
-        uint8_t b1 = g_kb1, b2 = g_kb2;
-        if (bootPressed()) b1 |= 0x01;
-        transport.notify3F(b1, b2);
-      }
+    // The motion state machine (incl. persistent orientation) advances in
+    // real time even while disconnected, so rot/reset settle before the
+    // host ever sees a report; only the reporting itself is gated.
+    joycon::ReportState frames[3];
+    uint32_t btn = (uint32_t)g_30_b4 | ((uint32_t)g_30_b5 << 8);
+    if (bootPressed()) btn |= 0x08;  // physical A in full mode
+    for (int i = 0; i < 3; i++) {
+      frames[i] = joycon::ReportState{};
+      frames[i].buttons = btn;
+      if (g_motion_on) motion.tick(5, frames[i]);
+    }
+    if (transport.connected() && transport.reportMode() == 0x30) {
+      transport.notify30(frames, g_timer++, transport.imuEnabled());
+      g_reports++;
+    } else if (transport.connected() && transport.reportMode() == 0x3F) {
+      // pre-handshake simple mode: buttons come from the PC frontend
+      // (tools/jc_remote.py) via 'kb'; BOOT key = momentary A.
+      uint8_t b1 = g_kb1, b2 = g_kb2;
+      if (bootPressed()) b1 |= 0x01;
+      transport.notify3F(b1, b2);
     }
     if (g_repeat && !motion.active() && now_us() >= g_next_repeat_us) {
       motion.armTwist();
@@ -66,6 +67,9 @@ static void reportTask(void*) {
 
 static void printHelp() {
   printf("[cmd] t [deg] [out_ms]  one calibrated two-way twist\n");
+  printf("[cmd] tl / tr           twist left / right (two-way)\n");
+  printf("[cmd] rot <0..2> <1|-1> rotate 90 deg around body axis X/Y/Z\n");
+  printf("[cmd] rst               reset orientation to face-up rest\n");
   printf("[cmd] y <0..2> <1|-1>   yaw gyro axis / sign (Joy-Con R flip)\n");
   printf("[cmd] s <float>         gyro scale dps/lsb (0.06103 or 0.07)\n");
   printf("[cmd] m <0|1>           synthetic motion off/on\n");
@@ -80,6 +84,9 @@ static void printStatus() {
   printf("[st] bt: connected=%d mode=0x%02x imu=%d reports=%u\n",
                 transport.connected(), transport.reportMode(),
                 transport.imuEnabled(), (unsigned)g_reports);
+  printf("[st] orient: w=%.2f x=%.2f y=%.2f z=%.2f\n",
+                motion.orient()[0], motion.orient()[1], motion.orient()[2],
+                motion.orient()[3]);
   printf("[st] motion: on=%d repeat=%d active=%d prog=%.2f last_w=%.1f dps\n",
                 g_motion_on, g_repeat, motion.active(), motion.progress(),
                 motion.lastOmegaDps());
@@ -135,6 +142,22 @@ static void handleCmd(const char* line) {
     if ((tok = strtok_r(nullptr, " \t", &save))) g_repeat = atoi(tok) != 0;
     g_next_repeat_us = 0;
     printf("[cmd] repeat %s\n", g_repeat ? "on" : "off");
+  } else if (!strcmp(tok, "tl") || !strcmp(tok, "tr")) {
+    motion.armTwist(tok[1] == 'l' ? 1 : -1);
+    printf("[cmd] twist %s\n", tok[1] == 'l' ? "left(+)" : "right(-)");
+  } else if (!strcmp(tok, "rot")) {  // 90 deg one-way body-axis rotation
+    long axis = 0, sign = 1;
+    if ((tok = strtok_r(nullptr, " \t", &save))) axis = atol(tok);
+    if ((tok = strtok_r(nullptr, " \t", &save))) sign = atol(tok);
+    if (axis < 0 || axis > 2 || (sign != 1 && sign != -1)) {
+      printf("[cmd] usage: rot <0..2> <1|-1>\n");
+    } else {
+      motion.armRot((uint8_t)axis, (float)sign);
+      printf("[cmd] rot axis=%ld sign=%ld\n", axis, sign);
+    }
+  } else if (!strcmp(tok, "rst")) {  // smooth return to face-up rest
+    motion.armReset();
+    printf("[cmd] orientation reset\n");
   } else if (!strcmp(tok, "kb")) {  // 0x3F simple-mode button bytes (hex)
     long v1 = g_kb1, v2 = g_kb2;
     if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
