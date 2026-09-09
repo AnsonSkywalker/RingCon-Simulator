@@ -6,6 +6,7 @@
 
 # 运行产物
 *.log
+tools/ring_probe_log.txt
 __pycache__/
 *.pyc
 

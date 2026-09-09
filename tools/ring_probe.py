@@ -128,20 +128,50 @@ def signed16(v):
     return v - 0x10000 if v >= 0x8000 else v
 
 
+def stats(frames, off=39):
+    vals = [signed16((f[off + 1] << 8) | f[off]) for f in frames]
+    m = sum(vals) / len(vals)
+    std = (sum((v - m) ** 2 for v in vals) / len(vals)) ** 0.5
+    return m, std, min(vals), max(vals)
+
+
+def marker_stats(frames):
+    """真机 extdev 格式标记：第 3 IMU 帧 acc-X=0x0000（r[37..38]）、
+    acc-Z=0x2000（r[41..42]），陀螺保持真实。两标记全中 → strain 槽位
+    r[39..40] 可信。"""
+    n = len(frames)
+    x_ok = sum(1 for f in frames if ((f[38] << 8) | f[37]) == 0x0000)
+    z_ok = sum(1 for f in frames if ((f[42] << 8) | f[41]) == 0x2000)
+    return x_ok, z_ok, n
+
+
 def analyze(rest, press, pull):
-    """扫描候选 2 字节偏移（含报告 ID 索引 36..47），找推压变化最大的一对。"""
-    best = None
-    for off in range(36, 47):
-        m_rest = sum(signed16((f[off + 1] << 8) | f[off]) for f in rest) / len(rest)
-        m_press = sum(signed16((f[off + 1] << 8) | f[off]) for f in press) / len(press)
-        delta = m_press - m_rest
-        if best is None or abs(delta) > abs(best[3]):
-            best = (off, m_rest, m_press, delta)
-    off, m_rest, m_press, delta = best
-    m_pull = None
+    """按真机标记定位 strain 槽位（r[39..40]）并输出三段统计。
+    旧版『推压变化最大』扫偏移会误锁到第 3 帧 gyro 接缝——r[44..45] 恰好
+    跨在 gyro-x 与 gyro-y 两个字段上，压环时手抖让两轴同动产生假峰
+    （2026-09-09 日志教训）。扫描表降级为交叉参考，不作定位依据。"""
+    for name, seg in (("静息", rest), ("推压", press), ("拉伸", pull)):
+        if not seg:
+            continue
+        x_ok, z_ok, n = marker_stats(seg)
+        note = "" if x_ok == n and z_ok == n else "  ⚠ 命中不全，看交叉参考表"
+        log(f"[mark] {name} 段标记命中: acc-X=0x0000 {x_ok}/{n}, "
+            f"acc-Z=0x2000 {z_ok}/{n}{note}")
+    m_rest, s_rest, lo_r, hi_r = stats(rest)
+    m_press, s_press, lo_p, hi_p = stats(press)
+    m_pull = s_pull = lo_l = hi_l = None
     if pull:
-        m_pull = sum(signed16((f[off + 1] << 8) | f[off]) for f in pull) / len(pull)
-    return off, m_rest, m_press, delta, m_pull
+        m_pull, s_pull, lo_l, hi_l = stats(pull)
+    log("[scan] 各偏移 推压-静息 均值差（跨字段读数会产生假峰，仅参考）:")
+    cells = []
+    for off in range(36, 47):
+        d = (sum(signed16((f[off + 1] << 8) | f[off]) for f in press) / len(press)
+             - sum(signed16((f[off + 1] << 8) | f[off]) for f in rest) / len(rest))
+        cells.append(f"{off}:{d:+.0f}")
+    log("       " + "  ".join(cells))
+    return (m_rest, s_rest, lo_r, hi_r,
+            m_press, s_press, lo_p, hi_p,
+            m_pull, s_pull, lo_l, hi_l)
 
 
 def main():
@@ -207,22 +237,35 @@ def main():
     pull = collect(p.dev, 3.0)
     log(f"    拉伸 {len(pull)} 包")
 
-    off, m_rest, m_press, delta, m_pull = analyze(rest, press, pull)
-    log("\n—— 标定结果 ——")
-    log(f"strain 字节偏移（含报告 ID 索引）: {off}-{off + 1}"
-        f"  （dekuNukem 无 0xA1 索引 = {off - 1}-{off}，parse.ts 期望 39-40）")
-    log(f"静息均值: {m_rest:.0f}")
-    log(f"推压均值: {m_press:.0f}   （变化 {delta:+.0f}，真实方向：推压增大）")
+    (m_rest, s_rest, lo_r, hi_r,
+     m_press, s_press, lo_p, hi_p,
+     m_pull, s_pull, lo_l, hi_l) = analyze(rest, press, pull)
+    log("\n—— 标定结果（strain 槽位 r[39..40]；0xA1 帧 40-41 = 固件 buf[40..41]）——")
+    log(f"静息: {m_rest:.0f} ± {s_rest:.0f}   （min {lo_r} / max {hi_r}）")
+    log(f"推压: {m_press:.0f} ± {s_press:.0f}   （Δ{m_press - m_rest:+.0f}，"
+        f"min {lo_p} / max {hi_p}）")
     if m_pull is not None:
-        log(f"拉伸均值: {m_pull:.0f}")
+        log(f"拉伸: {m_pull:.0f} ± {s_pull:.0f}   （Δ{m_pull - m_rest:+.0f}，"
+            f"min {lo_l} / max {hi_l}）")
+    swing_p = max(abs(m_press - m_rest), abs(hi_p - lo_r))
+    if swing_p < 300:
+        log("⚠ 推压段变化 <300：应变片可能没受力——检查 JC 是否插到底卡扣入位、"
+            "是否捏在环腿上用力；建议重跑一次再看")
+    if m_press > m_rest and (m_pull is None or m_pull < m_rest):
+        log("方向自检: 推压>静息>拉伸 ✓（与社区实测一致）")
+    elif swing_p >= 300:
+        log("方向自检: ✗ 与『推压增大/拉伸减小』不符——以本环实测为准：固件常量"
+            "按实测填，游戏内推/拉若反向，调 motion.h Config 或用 sq 滑杆纠正")
     log("\n全帧 hex（第一包）:")
     log(f"  静息: {rest[0].hex(' ')}")
     log(f"  推压: {press[0].hex(' ')}")
+    if pull:
+        log(f"  拉伸: {pull[0].hex(' ')}")
     log("\n—— 固件常量建议（src/motion.h RingStrain::Config）——")
     log(f"  rest_raw  = {round(m_rest)}")
-    log(f"  press_raw = {round(max(m_press, m_rest + 200))}")
+    log(f"  press_raw = {round(m_press)}")
     if m_pull is not None:
-        log(f"  pull_raw  = {round(min(m_pull, m_rest - 200))}")
+        log(f"  pull_raw  = {round(m_pull)}")
     log(f"\n请把 {log_path} 发回给助手。")
     # 不显式 close 句柄（项目惯例：进程退出由 OS 回收）
     try:

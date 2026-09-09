@@ -88,9 +88,10 @@ class TwistMotion {
 };
 
 // 合成健身环应变片（strain gauge）读数。真实环：静息 ~2257-3363（因环而异，
-// Zenn/mascii 实测），向内推压数值增大、向外拉伸减小；「推压一次」步骤只是
-// 游戏把当前值记为基线（无特殊协议）。数值经 0x5A 轮询使能后由固件嵌入
-// 0x30 报告第 3 帧 accel-Y 槽位（int16 LE）。真值校准用 tools/ring_probe.py。
+// Zenn/mascii 实测；本环真机帧实测 3757，方向待 ring_probe 复跑定案），
+// 「推压一次」步骤只是游戏把当前值记为基线（无特殊协议）。数值经 0x5A 轮询
+// 使能后由固件嵌入 0x30 报告第 3 帧 accel 块（真机格式 X=0x0000 / Y=strain /
+// Z=0x2000 标记，int16 LE，陀螺保持真实）。真值校准用 tools/ring_probe.py。
 class RingStrain {
  public:
   struct Config {

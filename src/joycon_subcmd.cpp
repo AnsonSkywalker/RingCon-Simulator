@@ -19,9 +19,21 @@ uint8_t ackFor(uint8_t sub) {
   }
 }
 
-// Replies with 34 data bytes; the real one carries MCU state, zero-fill is
-// enough for the handshake (joycontrol replies with zeros as well).
-const size_t kSpiReplyMax = 0x1D;
+// pack0x21 carries up to 35 reply bytes (buf[16..50]); the SPI-read echo
+// needs 5 + 0x1D and the captured Ring-Con MCU-config ack below needs all 35.
+// (The old cap of 29 overflowed by up to 5 bytes on the 25-byte color read
+// the Switch 2 handshake performs.)
+const size_t kSpiReplyMax = 35;
+
+// 0x21 ack body captured verbatim from a real Joy-Con with the Ring-Con
+// attached (tools/ring_probe_log.txt, 2026-09-09), sent after the webhid
+// "external device ready" MCU config: MCU state incl. the ext device id
+// 0x20 at byte 6, then 0x6E at [32]. Replayed so a game cross-checking the
+// MCU ack sees exactly what the real ring shows.
+const uint8_t kMcuCfgAck[35] = {
+    0x01, 0x00, 0xFF, 0x00, 0x09, 0x00, 0x20, 0x01,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0x6E, 0x00, 0x00};
 
 }  // namespace
 
@@ -110,12 +122,19 @@ size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
       if (argn >= 1 && arg[0] == 0) st.extdev_polling = false;
       break;
     case 0x5C:  // EXT_DEV_IN_FORMAT_CONFIG: embeds ExtDev data in 0x30; we
-                // always use the reference layout (3rd frame accel-Y), args
-                // visible in the [rx] log if the game ever differs
+                // always use the reference layout (3rd frame accel block),
+                // args visible in the [rx] log if the game ever differs
     case 0x08:   // SET_SHIPMENT_STATE
-    case 0x21:   // SET_NFC_IR_MCU_CONFIG
     case 0x30:   // SET_PLAYER_LIGHTS
     case 0x48:   // ENABLE_VIBRATION (no rumble motor here)
+    case 0x21:   // SET_NFC_IR_MCU_CONFIG
+      // Ring-Con enable config (first arg 0x21 = "external device ready"):
+      // replay the real-device ack body; other MCU configs keep the zero ack.
+      if (sub == 0x21 && argn >= 1 && arg[0] == 0x21) {
+        memcpy(reply, kMcuCfgAck, sizeof(kMcuCfgAck));
+        len = sizeof(kMcuCfgAck);
+      }
+      break;
     default:     // unknown sub-command: ack so the handshake never stalls
       break;
   }
