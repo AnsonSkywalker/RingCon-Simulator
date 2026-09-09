@@ -94,6 +94,16 @@ def raw_send(*_):
         raw_entry.delete(0, tk.END)
 
 
+def wipe_pairing():
+    # 实体同步键长按的等价操作：清主机记忆+bond、重启进配对模式。
+    # 破坏性操作（需重新配对），确认后才发送；selftest 桩住对话框覆盖本回调。
+    import tkinter.messagebox as mb
+    if mb.askyesno("清除配对（长按同步键）",
+                   "清除板子的主机记忆并重启进配对模式。\n"
+                   "之后需要在「更改握法/顺序」重新配对，确定？"):
+        send("unpair")
+
+
 # ---- UI construction (all widgets referenced by callbacks exist below) ----
 status = tk.Label(root, text="-", font=("Consolas", 10))
 status.pack(anchor=tk.W, padx=12, pady=2)
@@ -123,6 +133,8 @@ tk.Checkbutton(ctrl, text="Latch (click = toggle)", variable=latch).pack(side=tk
 tk.Button(ctrl, text="清空", command=clear_all).pack(side=tk.LEFT, padx=4)
 tk.Button(ctrl, text="休眠/断连 (rst)", width=16,
           command=lambda: send("rst")).pack(side=tk.LEFT, padx=4)
+tk.Button(ctrl, text="清除配对 (同步键长按)", width=20,
+          command=wipe_pairing).pack(side=tk.LEFT, padx=4)
 
 motion = tk.LabelFrame(root, text="体感")
 motion.pack(fill=tk.X, padx=10, pady=4)
@@ -263,6 +275,15 @@ if "--selftest" in sys.argv:
     toggle_auto()
     toggle_auto()
     clear_all()
+    # 清除配对回调：桩住确认对话框（返回 False → 不发送，不破坏当前配对）
+    import tkinter.messagebox as _mb
+    _orig_ask = _mb.askyesno
+    _mb.askyesno = lambda *a, **k: False
+    try:
+        wipe_pairing()
+        root.update()
+    finally:
+        _mb.askyesno = _orig_ask
     raw_entry.insert(0, "p")
     raw_send()
     for _ in range(8):

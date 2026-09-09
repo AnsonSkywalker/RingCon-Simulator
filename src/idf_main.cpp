@@ -11,6 +11,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_gap_bt_api.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "jc_log.h"
 #include "joycon_btclassic.h"
@@ -103,19 +104,59 @@ void setBit(uint8_t& byte, uint8_t bit, bool on) {
 }
 }  // namespace
 
-// On-board BOOT key (GPIO0, active low) = physical A fallback
+// On-board BOOT key (GPIO0, active low) = the Joy-Con sync key (short press
+// = disconnect, hold >=3 s = wipe pairing memory and reboot, see reportTask).
 static bool bootPressed() { return gpio_get_level(GPIO_NUM_0) == 0; }
+
+// SYNC-key long-press / 'unpair': forget the page-back host (NVS) and drop
+// every classic-BT bond (link keys), then reboot straight into pairing mode.
+// This is the way out of a stale state - e.g. the board once connected to a
+// PC during debugging and kept paging the wrong host ever since.
+static int64_t g_sync_down_us = 0;
+static bool g_sync_long_fired = false;
+
+static void wipePairingAndReboot() {
+  JCLOG("[sync] wiping host memory + all bonds, rebooting to pairing\n");
+  transport.forgetHost();
+  esp_bd_addr_t list[8];
+  int n = esp_bt_gap_get_bond_device_num();
+  n = n < 8 ? n : 8;
+  if (n > 0 && esp_bt_gap_get_bond_device_list(&n, list) == ESP_OK)
+    for (int i = 0; i < n; i++) esp_bt_gap_remove_bond_device(list[i]);
+  vTaskDelay(pdMS_TO_TICKS(200));  // let the stack's NVS writes land
+  esp_restart();
+}
 
 static void reportTask(void*) {
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
-    if (g_asleep && bootPressed()) wake();  // the physical key wakes, like a real JC
+    // physical BOOT = the sync key: short press <1 s disconnects (stays
+    // paired), hold >=3 s wipes pairing memory and reboots into pairing
+    // mode; 1-3 s is a dead zone so a sloppy hold does nothing
+    bool sync_down = bootPressed();
+    if (sync_down && !g_sync_down_us) g_sync_down_us = now_us();
+    if (sync_down && g_sync_down_us && !g_sync_long_fired &&
+        now_us() - g_sync_down_us >= 3000000) {
+      g_sync_long_fired = true;
+      wipePairingAndReboot();  // never returns
+    }
+    if (!sync_down && g_sync_down_us) {
+      int64_t held_us = now_us() - g_sync_down_us;
+      g_sync_down_us = 0;
+      if (g_sync_long_fired) {
+        // long press already fired; wait for the reboot
+      } else if (held_us < 1000000 && transport.connected()) {
+        JCLOG("[sync] short press: disconnect (stays paired)\n");
+        transport.disconnect();  // link machine runs the 15 s search window
+      } else if (held_us < 1000000) {
+        JCLOG("[sync] short press ignored (not connected)\n");
+      }
+    }
     // The motion state machine (incl. persistent orientation) advances in
     // real time even while disconnected, so rot/reset settle before the
     // host ever sees a report; only the reporting itself is gated.
     joycon::ReportState frames[3];
     uint32_t btn = (uint32_t)g_30_b4 | ((uint32_t)g_30_b5 << 8);
-    if (bootPressed()) btn |= 0x08;  // physical A in full mode
     strain.tick(5);  // Ring-Con strain channel (slews toward slider/push goal)
     for (int i = 0; i < 3; i++) {
       frames[i] = joycon::ReportState{};
@@ -130,9 +171,9 @@ static void reportTask(void*) {
       g_reports++;
     } else if (transport.connected() && transport.reportMode() == 0x3F) {
       // pre-handshake simple mode: buttons come from the PC frontend
-      // (tools/jc_remote.py) via 'kb'; BOOT key = momentary A.
+      // (tools/jc_remote.py) via 'kb'; the physical BOOT key is the sync
+      // key now, NOT a button
       uint8_t b1 = g_kb1, b2 = g_kb2;
-      if (bootPressed()) b1 |= 0x01;
       transport.notify3F(b1, b2);
     }
     if (g_repeat && !motion.active() && now_us() >= g_next_repeat_us) {
@@ -178,6 +219,8 @@ static void reportTask(void*) {
 
 static void printHelp() {
   printf("[cmd] bp <btn> / br <btn>  press/release A B X Y SL SR R ZR Plus RStick Home (press wakes)\n");
+  printf("[cmd] unpair           wipe host memory + bonds, reboot to pairing\n");
+  printf("[cmd]                  (long-press the BOOT/sync key does the same)\n");
   printf("[cmd] rst               sleep: drop the link, radio silent until a button press\n");
   printf("[cmd] gr                gyro orientation reset to face-up rest\n");
   printf("[cmd] tl / tr           twist left / right (two-way)\n");
@@ -287,6 +330,9 @@ static void handleCmd(const char* line) {
                       transport.reportMode(), transport.connected() ? "" : " (queued, not connected)");
       }
     }
+  } else if (!strcmp(tok, "unpair")) {  // sync long-press equivalent
+    printf("[cmd] unpair: wiping pairing memory, rebooting\n");
+    wipePairingAndReboot();  // never returns
   } else if (!strcmp(tok, "rst")) {  // real-JoyCon sleep: vanish from the air
     transport.disconnect();
     sleepNow();

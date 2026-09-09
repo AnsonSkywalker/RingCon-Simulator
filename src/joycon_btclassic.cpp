@@ -214,6 +214,17 @@ void JoyConBtClassic::hostLoad() {
           last_host_[3], last_host_[4], last_host_[5]);
 }
 
+void JoyConBtClassic::forgetHost() {
+  nvs_handle_t h;
+  if (nvs_open("ringcon", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_erase_key(h, "host");
+    nvs_commit(h);
+    nvs_close(h);
+  }
+  have_host_ = false;
+  JCLOG("[bt] host memory erased (fresh pairing mode)\n");
+}
+
 void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
   // Wire diagnosis: dump what the host actually sends after the stack strips
   // the 0xA2 DATA-OUTPUT transaction header (Switch 2 framing unknown at the

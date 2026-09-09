@@ -32,6 +32,7 @@ class JoyConBtClassic {
   bool reconnect();
   void setHidden(bool h) { hidden_ = h; }  // sleep: don't re-advertise on CLOSE
   bool haveHost() const { return have_host_; }
+  void forgetHost(); // erase NVS host memory: fresh pairing (sync long-press)
   bool pagingStale(int64_t now_us) const {
     return paging_ && now_us - page_sent_us_ > 5000000;
   }
