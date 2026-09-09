@@ -87,4 +87,38 @@ class TwistMotion {
   float acc_start_[3] = {0.f, 0.f, 1.f};
 };
 
+// 合成健身环应变片（strain gauge）读数。真实环：静息 ~2257-3363（因环而异，
+// Zenn/mascii 实测），向内推压数值增大、向外拉伸减小；「推压一次」步骤只是
+// 游戏把当前值记为基线（无特殊协议）。数值经 0x5A 轮询使能后由固件嵌入
+// 0x30 报告第 3 帧 accel-Y 槽位（int16 LE）。真值校准用 tools/ring_probe.py。
+class RingStrain {
+ public:
+  struct Config {
+    uint16_t rest_raw = 3000;   // 静息（probe 实测可调）
+    uint16_t press_raw = 4000;  // 满压（真实环推压方向 = 增大）
+    uint16_t pull_raw = 2000;   // 满拉
+    uint16_t slew_per_ms = 10;  // raw/ms：全程 ~100-200ms，贴近真实快速挤压
+    uint16_t hold_ms = 350;     // 推压一次在满压处的保持时长
+  };
+  Config cfg;
+
+  // 滑杆目标：-100..100（负=向外拉，正=向内压，0=静息）。取消进行中的推压。
+  void setLevel(int level);
+  // 推压一次：压到满 -> 保持 -> 回静息（游戏开局校准动作）。
+  void armPush() { phase_ = kToPress; }
+  void reset() { phase_ = kIdle; level_ = 0; }  // rst 休眠语义
+  void tick(uint16_t dt_ms);                    // 限速率逼近目标
+  uint16_t raw() const { return raw_; }
+  int level() const { return level_; }
+  bool active() const { return phase_ != kIdle; }
+
+ private:
+  enum Phase : uint8_t { kIdle, kToPress, kHold, kToRest };
+  uint16_t targetRaw() const;
+  Phase phase_ = kIdle;
+  int level_ = 0;             // 滑杆 -100..100
+  uint16_t raw_ = 3000;       // 当前输出值（begin 前默认 rest）
+  uint32_t t_ms_ = 0;
+};
+
 }  // namespace joycon

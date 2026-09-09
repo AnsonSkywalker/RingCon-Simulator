@@ -229,4 +229,52 @@ void TwistMotion::tick(uint16_t dt_ms, ReportState& st) {
   }
 }
 
+// ---- RingStrain -------------------------------------------------------------
+
+uint16_t RingStrain::targetRaw() const {
+  if (level_ <= 0)  // 0..-100: rest -> pull
+    return (uint16_t)((int32_t)cfg.rest_raw +
+                      ((int32_t)cfg.rest_raw - (int32_t)cfg.pull_raw) *
+                          level_ / 100);
+  return (uint16_t)((int32_t)cfg.rest_raw +
+                    ((int32_t)cfg.press_raw - (int32_t)cfg.rest_raw) *
+                        level_ / 100);
+}
+
+void RingStrain::setLevel(int level) {
+  if (level < -100) level = -100;
+  if (level > 100) level = 100;
+  level_ = level;
+  phase_ = kIdle;  // manual level overrides a running push gesture
+}
+
+void RingStrain::tick(uint16_t dt_ms) {
+  uint16_t target = targetRaw();
+  switch (phase_) {
+    case kToPress:
+    case kHold:
+      target = cfg.press_raw;
+      break;
+    case kToRest:
+      target = cfg.rest_raw;
+      break;
+    case kIdle:
+      break;
+  }
+  int32_t d = (int32_t)target - (int32_t)raw_;
+  int32_t step = (int32_t)cfg.slew_per_ms * dt_ms;
+  if (d > step) d = step;
+  if (d < -step) d = -step;
+  raw_ = (uint16_t)((int32_t)raw_ + d);
+  if (phase_ == kToPress && raw_ == cfg.press_raw) {
+    phase_ = kHold;
+    t_ms_ = 0;
+  } else if (phase_ == kHold) {
+    t_ms_ += dt_ms;
+    if (t_ms_ >= cfg.hold_ms) phase_ = kToRest;
+  } else if (phase_ == kToRest && raw_ == cfg.rest_raw) {
+    phase_ = kIdle;
+  }
+}
+
 }  // namespace joycon

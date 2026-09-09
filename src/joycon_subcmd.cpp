@@ -86,9 +86,34 @@ size_t dispatchOutputReport(const uint8_t* v, size_t n, SubCmdState& st,
       st.imu_enabled = argn >= 1 && arg[0] != 0;
       JCLOG("[sub] 6-axis %s\n", st.imu_enabled ? "on" : "off");
       break;
+    case 0x59: {  // GET_EXT_DEV_INFO - THE ring-detection point. Reply data:
+                  // [0]=status (0x00 with accessory attached, 0xFE without),
+                  // [1]=ext device id 0x20 = Ring-Con. Checkers verified in
+                  // refs/ringcon/connectRingCon.ts (data[15]==0x20) and
+                  // ringrunnermg joycon.hpp (buf[16]==0x20, buf[15]=0xFE
+                  // "no ringcon" / 0x00 with ring). Ground truth for the full
+                  // real reply body comes from tools/ring_probe.py.
+      uint8_t r[2] = {0x00, 0x20};
+      len = sizeof(r);
+      memcpy(reply, r, len);
+      break;
+    }
+    case 0x5A:  // EXT_DEV_POLLING_ENABLE: strain starts riding the 0x30 stream
+      st.extdev_polling = true;
+      JCLOG("[sub] extdev polling on\n");
+      break;
+    case 0x5B:  // EXT_DEV_POLLING_DISABLE
+      st.extdev_polling = false;
+      JCLOG("[sub] extdev polling off\n");
+      break;
+    case 0x22:  // SET_NFC_IR_MCU_STATE: 0x00 = suspend -> strain flow stops
+      if (argn >= 1 && arg[0] == 0) st.extdev_polling = false;
+      break;
+    case 0x5C:  // EXT_DEV_IN_FORMAT_CONFIG: embeds ExtDev data in 0x30; we
+                // always use the reference layout (3rd frame accel-Y), args
+                // visible in the [rx] log if the game ever differs
     case 0x08:   // SET_SHIPMENT_STATE
     case 0x21:   // SET_NFC_IR_MCU_CONFIG
-    case 0x22:   // SET_NFC_IR_MCU_STATE
     case 0x30:   // SET_PLAYER_LIGHTS
     case 0x48:   // ENABLE_VIBRATION (no rumble motor here)
     default:     // unknown sub-command: ack so the handshake never stalls

@@ -18,6 +18,7 @@
 
 static joycon::JoyConBtClassic transport;
 static joycon::TwistMotion motion;
+static joycon::RingStrain strain;
 static uint8_t g_timer = 0;
 static bool g_motion_on = true;       // 'm' command: synthetic motion vs still
 static bool g_repeat = true;          // 'r' command: twist every 1.5 s
@@ -91,10 +92,14 @@ static void reportTask(void*) {
     joycon::ReportState frames[3];
     uint32_t btn = (uint32_t)g_30_b4 | ((uint32_t)g_30_b5 << 8);
     if (bootPressed()) btn |= 0x08;  // physical A in full mode
+    strain.tick(5);  // Ring-Con strain channel (slews toward slider/push goal)
     for (int i = 0; i < 3; i++) {
       frames[i] = joycon::ReportState{};
       frames[i].buttons = btn;
       if (g_motion_on) motion.tick(5, frames[i]);
+      // strain only rides the stream after the game enabled ExtDev polling
+      frames[i].strain_on = transport.extdevPolling();
+      frames[i].strain_raw = strain.raw();
     }
     if (transport.connected() && transport.reportMode() == 0x30) {
       transport.notify30(frames, g_timer++, transport.imuEnabled());
@@ -139,6 +144,9 @@ static void printHelp() {
   printf("[cmd] s <float>         gyro scale dps/lsb (0.06103 or 0.07)\n");
   printf("[cmd] m <0|1>           synthetic motion off/on\n");
   printf("[cmd] r <0|1>           repeat twist every 1.5 s\n");
+  printf("[cmd] kb30 <b4> [b5]    raw 0x30 button bytes (escape hatch)\n");
+  printf("[cmd] sq <-100..100>    ring strain level (+=squeeze, -=pull)\n");
+  printf("[cmd] sqp               ring push-once (squeeze-hold-release)\n");
   printf("[cmd] p                 show twist curve parameters\n");
   printf("[cmd] i                 status\n");
 }
@@ -153,6 +161,9 @@ static void printStatus() {
   printf("[st] motion: on=%d repeat=%d active=%d prog=%.2f last_w=%.1f dps\n",
                 g_motion_on, g_repeat, motion.active(), motion.progress(),
                 motion.lastOmegaDps());
+  printf("[st] strain: raw=%u level=%d poll=%d\n",
+                strain.raw(), strain.level(),
+                transport.extdevPolling() ? 1 : 0);
   printf("[st] cfg: yaw_axis=%u scale=%.5f\n",
                 motion.cfg.yaw_axis, transport.gyroScale());
 }
@@ -236,6 +247,7 @@ static void handleCmd(const char* line) {
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
                              ESP_BT_NON_DISCOVERABLE);
     g_kb1 = g_kb2 = g_30_b4 = g_30_b5 = 0;  // sleep clears pressed buttons
+    strain.reset();  // and the ring strain channel (polling resets on CLOSE)
     g_asleep = true;
     printf("[cmd] sleeping (vanished from air; any key wakes)\n");
   } else if (!strcmp(tok, "gr")) {  // smooth orientation return to face-up
@@ -268,6 +280,20 @@ static void handleCmd(const char* line) {
     g_30_b4 = (uint8_t)v1;
     g_30_b5 = (uint8_t)v2;
     printf("[cmd] 30 btn b4=%02X b5=%02X\n", g_30_b4, g_30_b5);
+  } else if (!strcmp(tok, "sq")) {  // Ring-Con strain level, -100..100
+    long lv = 0;
+    if ((tok = strtok_r(nullptr, " \t", &save))) lv = atol(tok);
+    if (lv < -100 || lv > 100) {
+      printf("[cmd] usage: sq <-100..100>  (+=squeeze, -=pull)\n");
+    } else {
+      strain.setLevel((int)lv);
+      printf("[cmd] strain level %ld -> raw %u\n", lv, strain.raw());
+    }
+  } else if (!strcmp(tok, "sqp")) {  // push-once: squeeze-hold-release
+    strain.armPush();
+    printf("[cmd] ring push-once (rest %u -> press %u, hold %u ms)\n",
+                  strain.cfg.rest_raw, strain.cfg.press_raw,
+                  (unsigned)strain.cfg.hold_ms);
   } else if (!strcmp(tok, "p")) {
     printf("[cfg] out=%.1f deg/%u ms (peak %.0f dps) hold=%u ms\n",
                   motion.cfg.out_angle_deg, (unsigned)motion.cfg.out_ms,

@@ -42,6 +42,7 @@ class JoyConBtClassic {
   bool subscribed() const { return connected_; }
   uint8_t reportMode() const { return st_.report_mode; }
   bool imuEnabled() const { return st_.imu_enabled; }
+  bool extdevPolling() const { return st_.extdev_polling; }
   void setImuEnabled(bool v) { st_.imu_enabled = v; }
   void setGyroScale(float s) { packer_.setGyroScale(s); }
   float gyroScale() const { return packer_.gyroScale(); }

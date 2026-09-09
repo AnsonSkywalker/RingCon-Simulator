@@ -66,6 +66,11 @@ size_t ReportPacker::pack0x30Frames(uint8_t* buf, const ReportState (&st)[3],
   } else {
     memset(buf + 14, 0, 36);
   }
+  // Ring-Con strain rides frame 3's accel-Y slot once ExtDev polling is on
+  // (0x5C format config points at wire offset 37 len 6 = frame-3 accel; the
+  // strain is its middle 2 bytes = parse.ts offset 39 / full-frame 40-41).
+  if (st[2].strain_on)
+    put16le(buf + 14 + 2 * 12 + 2, (int16_t)st[2].strain_raw);
   return 50;  // 0xA1 + id + timer..IMU end (bytes [0..49])
 }
 

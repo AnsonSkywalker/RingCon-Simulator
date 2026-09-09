@@ -51,9 +51,10 @@ struct BtClassicHooks {
           g_self->connected_ = false;
           g_self->paging_ = false;
           // real Joy-Con semantics: after a link drop the controller wakes up
-          // clean - the host re-runs the full handshake (mode/IMU) from zero
+          // clean - the host re-runs the full handshake (mode/IMU/MCU) from zero
           g_self->st_.report_mode = 0x3F;
           g_self->st_.imu_enabled = false;
+          g_self->st_.extdev_polling = false;
           // while asleep (rst) stay off the air; otherwise re-advertise so a
           // scanning host can find us (first-ever pairing has no host to page)
           if (!g_self->hidden_)

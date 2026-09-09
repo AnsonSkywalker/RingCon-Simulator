@@ -30,6 +30,11 @@ struct ReportState {
   // IMU in physical units; packer converts to raw int16 LE
   float acc_g[3] = {0.f, 0.f, 1.f};   // g
   float gyro_dps[3] = {0.f, 0.f, 0.f};
+  // Ring-Con strain: when on, overwrites the 3rd IMU frame's accel-Y slot
+  // (wire bytes 40-41 of the 0xA1-prefixed frame; parse.ts offset 39 without
+  // report id). Values only flow while the host enabled ExtDev polling.
+  bool strain_on = false;
+  uint16_t strain_raw = 0;
 };
 
 // Serializes into a 0xA1-prefixed HID input report buffer.

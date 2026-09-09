@@ -144,6 +144,29 @@ tk.Button(act_row, text="右扭90°", width=8,
 tk.Checkbutton(motion, text="每1.5s自动扭腰", variable=auto_var,
                command=toggle_auto).pack(side=tk.LEFT, padx=8)
 
+# 健身环通道：滑杆 = 应变片连续挤压量（+=推压 / -=拉伸）；推压一次 = 游戏
+# 开局校准动作（挤压-保持-回弹固件曲线）。拖动中不刷串口，松手才发。
+ring = tk.LabelFrame(root, text="健身环")
+ring.pack(fill=tk.X, padx=10, pady=4)
+ring_row = tk.Frame(ring)
+ring_row.pack(pady=2)
+tk.Label(ring_row, text="挤压:").pack(side=tk.LEFT)
+sq_scale = tk.Scale(ring_row, from_=-100, to=100, orient=tk.HORIZONTAL,
+                    length=220, showvalue=True)
+sq_scale.set(0)
+sq_scale.pack(side=tk.LEFT, padx=4)
+
+
+def sq_release(_event=None):
+    send(f"sq {sq_scale.get()}")
+
+
+sq_scale.bind("<ButtonRelease-1>", sq_release)
+tk.Button(ring_row, text="推压一次", width=10,
+          command=lambda: send("sqp")).pack(side=tk.LEFT, padx=4)
+tk.Button(ring_row, text="回零", width=6,
+          command=lambda: (sq_scale.set(0), sq_release())).pack(side=tk.LEFT)
+
 raw_row = tk.Frame(root)
 raw_row.pack(pady=2)
 tk.Label(raw_row, text="Raw:").pack(side=tk.LEFT)
@@ -222,9 +245,15 @@ if "--selftest" in sys.argv:
     button("A")
     release("A")
     latch.set(True)
-    for cmd in ["gr", "tl", "tr", "rot 0 1", "rot 2 -1"]:
+    for cmd in ["gr", "tl", "tr", "rot 0 1", "rot 2 -1", "sqp"]:
         send(cmd)
         root.update()
+    sq_scale.set(80)
+    sq_release()  # ring slider callback
+    sq_scale.set(-40)
+    sq_release()
+    sq_scale.set(0)
+    sq_release()
     toggle_auto()
     toggle_auto()
     clear_all()
