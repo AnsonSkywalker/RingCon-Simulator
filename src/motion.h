@@ -87,17 +87,22 @@ class TwistMotion {
   float acc_start_[3] = {0.f, 0.f, 1.f};
 };
 
-// 合成健身环应变片（strain gauge）读数。真实环：静息 ~2257-3363（因环而异，
-// Zenn/mascii 实测；本环真机帧实测 3757，方向待 ring_probe 复跑定案），
-// 「推压一次」步骤只是游戏把当前值记为基线（无特殊协议）。数值经 0x5A 轮询
-// 使能后由固件嵌入 0x30 报告第 3 帧 accel 块（真机格式 X=0x0000 / Y=strain /
-// Z=0x2000 标记，int16 LE，陀螺保持真实）。真值校准用 tools/ring_probe.py。
+// 合成健身环应变片（strain gauge）读数。真实环：静息 ~2257-3757（因环与
+// 插入深度而异），向内推压数值增大、向外拉伸减小（本环真机实测确认，
+// 见 Config 注释）；「推压一次」步骤只是游戏把当前值记为基线（无特殊
+// 协议）。数值经 0x5A 轮询使能后由固件嵌入 0x30 报告第 3 帧 accel 块
+// （真机格式 X=0x0000 / Y=strain / Z=0x2000 标记，int16 LE，陀螺保持真实）。
+// 真值校准用 tools/ring_probe.py。
 class RingStrain {
  public:
   struct Config {
-    uint16_t rest_raw = 3000;   // 静息（probe 实测可调）
-    uint16_t press_raw = 4000;  // 满压（真实环推压方向 = 增大）
-    uint16_t pull_raw = 2000;   // 满拉
+    // 本环真值（tools/ring_probe_log.txt 2026-09-09 复跑，标记 100% 命中）：
+    // 静息 3702±1，推压 5517±109（Δ+1816），拉伸 1320±39（Δ-2382）；
+    // 方向 = 推压增大/拉伸减小，与社区口径一致。游戏以「推压一次」自记
+    // 基线，静息绝对值非关键。
+    uint16_t rest_raw = 3702;   // 静息
+    uint16_t press_raw = 5517;  // 满压（真实环推压方向 = 增大，已实测确认）
+    uint16_t pull_raw = 1320;   // 满拉
     uint16_t slew_per_ms = 10;  // raw/ms：全程 ~100-200ms，贴近真实快速挤压
     uint16_t hold_ms = 350;     // 推压一次在满压处的保持时长
   };
