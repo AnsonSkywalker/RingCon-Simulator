@@ -33,6 +33,7 @@ struct BtClassicHooks {
             param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED) {
           g_self->connected_ = true;
           g_self->paging_ = false;
+          g_self->page_wedge_ = false;
           memcpy(g_self->last_host_, param->open.bd_addr, 6);
           g_self->have_host_ = true;  // remember the host for later page-back
           g_self->hostSave();         // persist across reboots
@@ -42,6 +43,12 @@ struct BtClassicHooks {
           JCLOG("[bt] connected\n");
         } else if (param->open.status != ESP_HIDD_SUCCESS) {
           g_self->paging_ = false;
+          // Wedge signature: after a page issued while a previous link was
+          // still tearing down, the BTC layer rejects every further connect
+          // with "busy now" and never recovers on its own. Flag it so the
+          // app can reboot instead of burning the search window on doomed
+          // retries (rst/disconnect does NOT clear this state - tested).
+          g_self->page_wedge_ = true;
           JCLOG("[bt] open evt, status=%d conn=%d\n", param->open.status,
                         param->open.conn_status);
         }

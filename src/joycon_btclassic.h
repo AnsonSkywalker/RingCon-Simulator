@@ -38,6 +38,9 @@ class JoyConBtClassic {
   }
   void clearStalePage() { paging_ = false; }
   bool connected() const { return connected_; }
+  // Set when an OPEN_EVT reports failure: the ESP-HIDD BTC layer then refuses
+  // every further esp_bt_hid_device_connect with "busy now" until reboot.
+  bool pageWedge() const { return page_wedge_; }
   // Classic HID has no CCCD: once the L2CAP interrupt channel is up, reports
   // simply flow. Kept for parity with the BLE transport's interface.
   bool subscribed() const { return connected_; }
@@ -61,6 +64,7 @@ class JoyConBtClassic {
   bool have_host_ = false;
   bool hidden_ = false;      // sleep state: CLOSE must not re-advertise
   bool paging_ = false;      // device-initiated page in flight
+  bool page_wedge_ = false;  // BTC layer stuck after a failed page
   int64_t page_sent_us_ = 0;  // when the page was issued (stale-clear)
 };
 

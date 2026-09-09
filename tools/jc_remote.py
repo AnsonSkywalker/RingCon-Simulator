@@ -221,7 +221,8 @@ def reader():
                                 conn = "搜索主机中…"
                             link_state["text"] = f"{conn} | mode=0x{m.group(2)}"
                     else:
-                        rx_line["text"] = s
+                        # truncate: long hex/log lines must not stretch the window
+                        rx_line["text"] = s[:100]
             else:
                 time.sleep(0.02)
         except Exception:

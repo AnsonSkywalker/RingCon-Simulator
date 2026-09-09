@@ -64,6 +64,9 @@ static void wake() {
     // link key, no re-pairing); connectable-only so nothing else grabs us
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
     g_search_deadline_us = now_us() + kSearchWindowUs;
+    // throttle the 15 ms retry loop: a second esp_bt_hid_device_connect while
+    // this page is in flight hits "busy now" AND wedges page #1 forever
+    g_last_reconnect_us = now_us();
     transport.clearStalePage();
     JCLOG("[cmd] awake, paging host (search window %d s, page=%d)\n",
           (int)(kSearchWindowUs / 1000000), transport.reconnect());
@@ -192,12 +195,23 @@ static void reportTask(void*) {
       g_search_deadline_us = 0;
     } else if (g_was_connected && !g_asleep) {
       g_search_deadline_us = now_us() + kSearchWindowUs;
+      // cooldown before the first page: paging while the host-side teardown
+      // of the dropped link is still running wedges the BTC layer (all later
+      // pages fail "busy now" until reboot)
+      g_last_reconnect_us = now_us() - 1500000;
       JCLOG("[bt] link lost, searching for host (%d s)\n",
             (int)(kSearchWindowUs / 1000000));
     }
     g_was_connected = conn;
     // device-initiated page-back: only inside an active search window
     if (!conn && !g_asleep) {
+      if (transport.pageWedge()) {
+        // failed page left the BTC layer stuck; rst/disconnect cannot clear
+        // it - reboot is the only recovery, and a fresh boot pages fine
+        JCLOG("[bt] page wedged (BTC busy), rebooting to recover\n");
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+      }
       if (transport.pagingStale(now_us())) {
         transport.clearStalePage();  // failed page emits no event
         JCLOG("[cmd] page stale, cleared\n");
