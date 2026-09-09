@@ -180,7 +180,7 @@ link.pack(anchor=tk.W, padx=12)
 rx_label = tk.Label(root, text="rx: -", font=("Consolas", 9), fg="#555")
 rx_label.pack(anchor=tk.W, padx=12)
 tk.Label(root, text="Latch on: 点击=切换(可多键同按) | Latch off: 鼠标按住=按键按住\n"
-                    "休眠后等几秒即被自动重新搜索配对",
+                    "真机语义：休眠/待机=射频静默，点击任意按键唤醒并搜索主机（15 秒搜不到自动回睡）",
          justify=tk.LEFT).pack(pady=4)
 
 
@@ -199,8 +199,14 @@ def reader():
                         continue
                     if s.startswith("[st] bt:"):
                         m = re.search(r"connected=(\d+).*mode=0x([0-9a-f]+)", s)
+                        w = re.search(r"awake=(\d)", s)
                         if m:
-                            conn = "已连接" if m.group(1) == "1" else "断连"
+                            if m.group(1) == "1":
+                                conn = "已连接"
+                            elif w and w.group(1) == "0":
+                                conn = "休眠 | 点任意按键唤醒"
+                            else:
+                                conn = "搜索主机中…"
                             link_state["text"] = f"{conn} | mode=0x{m.group(2)}"
                     else:
                         rx_line["text"] = s

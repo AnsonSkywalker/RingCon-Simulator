@@ -32,22 +32,45 @@ static uint8_t g_30_b4 = 0, g_30_b5 = 0;
 
 static int64_t now_us() { return esp_timer_get_time(); }
 
-// Real Joy-Con sleep/wake semantics: rst makes the device vanish from the air
-// (host must re-scan to find it); any later command wakes it (re-advertise).
+// Real Joy-Con sleep/wake semantics: standby = radio silent (invisible and
+// non-connectable, like a sleeping Joy-Con); ONLY a button press wakes it.
+// Wake pages the bonded host inside a bounded search window (the blinking
+// phase) and returns to standby if the host never answers. Non-button
+// commands do NOT wake the device - a real Joy-Con ignores everything but
+// its keys while asleep.
 static bool g_asleep = false;
 static int64_t g_last_reconnect_us = 0;  // rate-limit page retries
+static int64_t g_search_deadline_us = 0;  // 0 = not searching
+static constexpr int64_t kSearchWindowUs = 15000000;  // blink ~15 s, then sleep
+static bool g_was_connected = false;
+
+static void sleepNow() {
+  g_asleep = true;
+  g_search_deadline_us = 0;
+  transport.setHidden(true);  // CLOSE_EVT must not re-advertise
+  esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+  g_kb1 = g_kb2 = g_30_b4 = g_30_b5 = 0;  // sleep clears pressed buttons
+  strain.reset();  // and the ring strain channel (polling resets on CLOSE)
+}
 
 static void wake() {
   if (!g_asleep) return;
   g_asleep = false;
   transport.setHidden(false);
+  if (transport.connected()) return;  // a late page already re-linked us
+  if (transport.haveHost()) {
+    // real Joy-Con wake = page the host and re-establish the link (stored
+    // link key, no re-pairing); connectable-only so nothing else grabs us
+    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+    g_search_deadline_us = now_us() + kSearchWindowUs;
+    transport.clearStalePage();
+    JCLOG("[cmd] awake, paging host (search window %d s, page=%d)\n",
+          (int)(kSearchWindowUs / 1000000), transport.reconnect());
+    return;
+  }
+  // no bonded host yet: pairing mode, wait for the console to find us
   esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
-  // real Joy-Con wake = page the host and re-establish the link (uses the
-  // stored link key, no re-pairing); this is how "permanent reconnect" works
-  if (!transport.connected() && transport.haveHost() && transport.reconnect())
-    JCLOG("[cmd] awake, paging host to reconnect\n");
-  else
-    JCLOG("[cmd] awake, discoverable\n");
+  JCLOG("[cmd] awake, discoverable (no host)\n");
 }
 
 // Abstract button -> report bit routing. The frontend never mentions report
@@ -86,6 +109,7 @@ static bool bootPressed() { return gpio_get_level(GPIO_NUM_0) == 0; }
 static void reportTask(void*) {
   TickType_t last_wake = xTaskGetTickCount();
   for (;;) {
+    if (g_asleep && bootPressed()) wake();  // the physical key wakes, like a real JC
     // The motion state machine (incl. persistent orientation) advances in
     // real time even while disconnected, so rot/reset settle before the
     // host ever sees a report; only the reporting itself is gated.
@@ -115,9 +139,24 @@ static void reportTask(void*) {
       motion.armTwist();
       g_next_repeat_us = now_us() + 1500000;
     }
-    // device-initiated page-back retry: when disconnected but bonded, ring
-    // the host every 3 s until it links (or while asleep: skipped below)
-    if (!transport.connected() && !g_asleep) {
+    // link state machine: connected -> clear the search window; host vanished
+    // -> blink window with page retries; window expired -> radio-silent
+    // standby (a real Joy-Con does not search forever, it goes back to sleep)
+    bool conn = transport.connected();
+    if (conn) {
+      if (g_asleep) {  // a late page landed while asleep: adopt the link
+        g_asleep = false;
+        transport.setHidden(false);
+      }
+      g_search_deadline_us = 0;
+    } else if (g_was_connected && !g_asleep) {
+      g_search_deadline_us = now_us() + kSearchWindowUs;
+      JCLOG("[bt] link lost, searching for host (%d s)\n",
+            (int)(kSearchWindowUs / 1000000));
+    }
+    g_was_connected = conn;
+    // device-initiated page-back: only inside an active search window
+    if (!conn && !g_asleep) {
       if (transport.pagingStale(now_us())) {
         transport.clearStalePage();  // failed page emits no event
         JCLOG("[cmd] page stale, cleared\n");
@@ -125,8 +164,12 @@ static void reportTask(void*) {
       if (transport.haveHost() &&
           now_us() - g_last_reconnect_us > 3000000) {
         g_last_reconnect_us = now_us();
-        bool ok = transport.reconnect();
-        JCLOG("[cmd] page retry ok=%d\n", ok);
+        JCLOG("[cmd] page retry ok=%d\n", transport.reconnect());
+      }
+      if (g_search_deadline_us && now_us() >= g_search_deadline_us) {
+        JCLOG("[bt] no host in %d s, back to standby (any button wakes)\n",
+              (int)(kSearchWindowUs / 1000000));
+        sleepNow();
       }
     }
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(15));
@@ -134,8 +177,8 @@ static void reportTask(void*) {
 }
 
 static void printHelp() {
-  printf("[cmd] bp <btn> / br <btn>  press/release A B X Y SL SR R ZR Plus RStick Home\n");
-  printf("[cmd] rst               sleep: drop the connection (icon disappears)\n");
+  printf("[cmd] bp <btn> / br <btn>  press/release A B X Y SL SR R ZR Plus RStick Home (press wakes)\n");
+  printf("[cmd] rst               sleep: drop the link, radio silent until a button press\n");
   printf("[cmd] gr                gyro orientation reset to face-up rest\n");
   printf("[cmd] tl / tr           twist left / right (two-way)\n");
   printf("[cmd] rot <0..2> <1|-1> rotate 90 deg around body axis X/Y/Z\n");
@@ -152,9 +195,10 @@ static void printHelp() {
 }
 
 static void printStatus() {
-  printf("[st] bt: connected=%d mode=0x%02x imu=%d reports=%u host=%d\n",
+  printf("[st] bt: connected=%d mode=0x%02x imu=%d reports=%u host=%d awake=%d\n",
                 transport.connected(), transport.reportMode(),
-                transport.imuEnabled(), (unsigned)g_reports, transport.haveHost());
+                transport.imuEnabled(), (unsigned)g_reports,
+                transport.haveHost(), g_asleep ? 0 : 1);
   printf("[st] orient: w=%.2f x=%.2f y=%.2f z=%.2f\n",
                 motion.orient()[0], motion.orient()[1], motion.orient()[2],
                 motion.orient()[3]);
@@ -175,7 +219,8 @@ static void handleCmd(const char* line) {
   char* save = nullptr;
   char* tok = strtok_r(buf, " \t", &save);
   if (!tok) return;
-  wake();  // any command = wake from sleep (real Joy-Con behavior)
+  // NOTE: no blanket wake() here - only button commands wake the device, so
+  // the frontend's 3 s status poll cannot keep it awake against its will.
   if (!strcmp(tok, "h")) {
     printHelp();
   } else if (!strcmp(tok, "t")) {
@@ -220,6 +265,7 @@ static void handleCmd(const char* line) {
   } else if (!strcmp(tok, "bp") || !strcmp(tok, "br")) {
     // Abstract press/release: routed to the live report mode's bit layout.
     bool down = tok[1] == 'p';
+    if (down) wake();  // a button press is what wakes a sleeping Joy-Con
     if (!(tok = strtok_r(nullptr, " \t", &save))) {
       printf("[cmd] usage: bp <A|B|X|Y|SL|SR|R|ZR|Plus|RStick|Home>\n");
     } else {
@@ -242,14 +288,9 @@ static void handleCmd(const char* line) {
       }
     }
   } else if (!strcmp(tok, "rst")) {  // real-JoyCon sleep: vanish from the air
-    transport.setHidden(true);   // so CLOSE_EVT won't re-advertise
     transport.disconnect();
-    esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE,
-                             ESP_BT_NON_DISCOVERABLE);
-    g_kb1 = g_kb2 = g_30_b4 = g_30_b5 = 0;  // sleep clears pressed buttons
-    strain.reset();  // and the ring strain channel (polling resets on CLOSE)
-    g_asleep = true;
-    printf("[cmd] sleeping (vanished from air; any key wakes)\n");
+    sleepNow();
+    printf("[cmd] sleeping (radio silent; press any button to wake)\n");
   } else if (!strcmp(tok, "gr")) {  // smooth orientation return to face-up
     motion.armReset();
     printf("[cmd] orientation reset\n");
@@ -267,6 +308,7 @@ static void handleCmd(const char* line) {
       printf("[cmd] rot axis=%ld sign=%ld\n", axis, sign);
     }
   } else if (!strcmp(tok, "kb")) {  // 0x3F simple-mode button bytes (hex)
+    wake();  // raw button setters count as key presses too
     long v1 = g_kb1, v2 = g_kb2;
     if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
     if ((tok = strtok_r(nullptr, " \t", &save))) v2 = strtol(tok, nullptr, 16);
@@ -274,6 +316,7 @@ static void handleCmd(const char* line) {
     g_kb2 = (uint8_t)v2;
     printf("[cmd] 3F btn b1=%02X b2=%02X\n", g_kb1, g_kb2);
   } else if (!strcmp(tok, "kb30")) {  // 0x30 full-mode button bytes 4/5 (hex)
+    wake();
     long v1 = g_30_b4, v2 = g_30_b5;
     if ((tok = strtok_r(nullptr, " \t", &save))) v1 = strtol(tok, nullptr, 16);
     if ((tok = strtok_r(nullptr, " \t", &save))) v2 = strtol(tok, nullptr, 16);
@@ -352,6 +395,10 @@ extern "C" void app_main(void) {
   io.pull_up_en = GPIO_PULLUP_ENABLE;
   gpio_config(&io);
   transport.begin("Joy-Con (R)", 0x02);
+  if (transport.haveHost()) {
+    sleepNow();  // bonded: boot radio-silent like a sleeping Joy-Con
+    JCLOG("[bt] standby (press any button to wake)\n");
+  }
   xTaskCreatePinnedToCore(reportTask, "rpt30", 4096, nullptr, 5, nullptr, 0);
   xTaskCreate(cliTask, "cli", 4096, nullptr, 3, nullptr);
   printHelp();
