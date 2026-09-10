@@ -23,6 +23,11 @@ namespace joycon {
 
 namespace {
 JoyConBtClassic* g_self = nullptr;
+// Real JC(R) sub-command acks take 27-260 ms (probe31 v4/v5 per-step timing);
+// ours left instantly. #5's 41x mode-0 hammer reads as the game re-resetting
+// an MCU whose ack came back too fast to have actually reset anything, so
+// every ack now leaves ~60 ms after its command.
+constexpr int64_t kAckDelayUs = 60000;
 }  // namespace
 
 struct BtClassicHooks {
@@ -62,6 +67,8 @@ struct BtClassicHooks {
           g_self->st_.report_mode = 0x3F;
           g_self->st_.imu_enabled = false;
           g_self->st_.extdev_polling = false;
+          g_self->st_.mcu_mode = 0x01;  // MCU back to standby (power-on state)
+          g_self->st_.mcu_resume_fresh = false;
           // while asleep (rst) stay off the air; otherwise re-advertise so a
           // scanning host can find us (first-ever pairing has no host to page)
           if (!g_self->hidden_)
@@ -237,7 +244,9 @@ void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
   // the 0xA2 DATA-OUTPUT transaction header (Switch 2 framing unknown at the
   // time of writing - its frames ran 10 bytes longer than Switch 1's).
   char hex[3 * 34 + 1];
-  size_t m = n < 16 ? n : 16;
+  // 24 bytes = counter + rumble + subcmd + first 13 args: enough to see the
+  // NS2's MCU 0x21 payload head ([0x21][cmd][mode]) in the session log
+  size_t m = n < 24 ? n : 24;
   for (size_t i = 0; i < m; i++) sprintf(hex + 3 * i, "%02X ", v[i]);
   hex[3 * m] = 0;
   JCLOG("[rx] n=%u %s\n", (unsigned)n, hex);
@@ -245,12 +254,40 @@ void JoyConBtClassic::handleOutput(const uint8_t* v, size_t n) {
   uint8_t out51[51];
   size_t len = dispatchOutputReport(v, n, st_, packer_, out51);
   if (len > 0 && connected_) {
-    size_t t = len < 34 ? len : 34;
-    for (size_t i = 0; i < t; i++) sprintf(hex + 3 * i, "%02X ", out51[i]);
+    if (ackq_cnt_ == kAckQ) {
+      // Queue full (host firing faster than 1 ack / 60 ms sustained): this
+      // one leaves immediately rather than being dropped.
+      JCLOG("[tx] l=%u (ack queue full, sent now)\n", (unsigned)len);
+      esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, 0x21,
+                                    static_cast<uint16_t>(len - 2), out51 + 2);
+      return;
+    }
+    PendAck& a = ackq_[(ackq_head_ + ackq_cnt_) % kAckQ];
+    memcpy(a.buf, out51, len);
+    a.len = len;
+    a.due_us = esp_timer_get_time() + kAckDelayUs;
+    ackq_cnt_++;
+  }
+}
+
+void JoyConBtClassic::pollAcks() {
+  if (!connected_) {
+    ackq_head_ = 0;
+    ackq_cnt_ = 0;
+    return;
+  }
+  int64_t now = esp_timer_get_time();
+  while (ackq_cnt_ > 0 && ackq_[ackq_head_].due_us <= now) {
+    PendAck& a = ackq_[ackq_head_];
+    char hex[3 * 34 + 1];
+    size_t t = a.len < 34 ? a.len : 34;
+    for (size_t i = 0; i < t; i++) sprintf(hex + 3 * i, "%02X ", a.buf[i]);
     hex[3 * t] = 0;
-    JCLOG("[tx] l=%u %s\n", (unsigned)len, hex);
+    JCLOG("[tx] l=%u %s\n", (unsigned)a.len, hex);
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, 0x21,
-                                  static_cast<uint16_t>(len - 2), out51 + 2);
+                                  static_cast<uint16_t>(a.len - 2), a.buf + 2);
+    ackq_head_ = (ackq_head_ + 1) % kAckQ;
+    ackq_cnt_--;
   }
 }
 

@@ -169,6 +169,7 @@ static void reportTask(void*) {
       frames[i].strain_on = transport.extdevPolling();
       frames[i].strain_raw = strain.raw();
     }
+    transport.pollAcks();  // deferred sub-command acks (~60 ms, real-JC pacing)
     if (transport.connected() && transport.reportMode() == 0x30) {
       transport.notify30(frames, g_timer++, transport.imuEnabled());
       g_reports++;

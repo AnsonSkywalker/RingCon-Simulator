@@ -50,12 +50,19 @@ class JoyConBtClassic {
   void setImuEnabled(bool v) { st_.imu_enabled = v; }
   void setGyroScale(float s) { packer_.setGyroScale(s); }
   float gyroScale() const { return packer_.gyroScale(); }
+  // Send due deferred sub-command acks; call every loop tick (~5 ms).
+  void pollAcks();
 
  private:
   friend struct BtClassicHooks;
   void handleOutput(const uint8_t* v, size_t n);
   void hostSave();   // persist last_host_ in NVS (survive reboots)
   void hostLoad();   // restore on boot
+
+  struct PendAck { uint8_t buf[51]; uint16_t len; int64_t due_us; };
+  static constexpr int kAckQ = 8;
+  PendAck ackq_[kAckQ];
+  int ackq_head_ = 0, ackq_cnt_ = 0;
 
   ReportPacker packer_;
   SubCmdState st_;

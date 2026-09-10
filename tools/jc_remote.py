@@ -1,8 +1,8 @@
 # AIGC note: jc_remote.py - PC-side Joy-Con (R) control panel. All buttons are
 # abstract (press A = "bp A"), the firmware routes to the right bit for the
 # host's current phase (grip-screen simple-HID vs full mode) so the user never
-# thinks about report modes. Latch on (default): click = toggle; hold several
-# at once (e.g. latch SL+SR then press A). Latch off: mouse-hold = held.
+# thinks about report modes. Latch off (default): mouse-hold = held. Latch on:
+# click = toggle; latch several at once (e.g. SL+SR then press A).
 #
 # rst = sleep/unlink (real Joy-Con behavior; Switch icon disappears). gr =
 # orientation reset (return synthetic controller to face-up flat). Motion
@@ -11,6 +11,7 @@
 # Usage:  python jc_remote.py [COM5] [--selftest]
 #   --selftest: build the UI, programmatically exercise every callback, exit.
 # Requires: pip install pyserial   (tkinter ships with Python on Windows)
+import os
 import re
 import sys
 import threading
@@ -33,14 +34,45 @@ ser.dsrdtr = False  # don't pulse DTR -> board keeps its connection across opens
 ser.rtscts = False
 ser.dtr = False
 ser.rts = False
-ser.open()
+try:
+    ser.open()
+except serial.SerialException as e:
+    # COM5 被占用（ZCode 后台抓取/另一个前端实例/烧录中）是最常见原因
+    print(f"[FAIL] 打开 {PORT} 失败：{e}")
+    print("串口可能被占用：关闭 ZCode 的后台抓取任务 / 其他前端实例后重试，")
+    print("或让助手先停掉串口任务再启动本前端。")
+    raise SystemExit(1)
 ser.reset_input_buffer()
+
+# 全量串口日志落盘：窗口上只显示最后一行 rx，冷启动抓包等场景靠文件回看。
+# 含 tx+rx 全部行（0x02 应答里有 MAC，公开日志前先脱敏）。
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "jc_session_log.txt")
+try:
+    _log_mode = "a" if os.path.getsize(LOG_PATH) < 5 * 1024 * 1024 else "w"
+except OSError:
+    _log_mode = "w"
+session_log = open(LOG_PATH, _log_mode, encoding="utf-8")
+
+
+def slog(tag, text):
+    # 带日期：追加式日志跨天复用同一文件，只有时分秒会和前一天的行混淆
+    session_log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {tag} {text}\n")
+    session_log.flush()
+
+
+slog("ui", f"frontend start (pid={os.getpid()}, port={PORT})")
+
+# tx> 行的操作来源标记：panel=面板点击 / selftest=自检 / exit=关窗口收尾。
+# 轮询 i 不走 send()、不落日志（3s 一条会把日志刷满，且非用户操作）。
+src_tag = {"cur": "panel"}
+
 
 root = tk.Tk()
 root.title(f"Joy-Con (R) Remote -> {PORT}")
 
-latch = tk.BooleanVar(value=True)
-auto_var = tk.BooleanVar(value=True)
+latch = tk.BooleanVar(value=False)
+auto_var = tk.BooleanVar(value=False)  # 自动扭腰默认关：装环检测等场景不该有自动动作
 held = set()          # buttons currently latched down
 rx_line = {"text": ""}     # last firmware response line (reader thread)
 link_state = {"text": "未连接"}  # parsed from periodic status replies
@@ -51,6 +83,7 @@ status = None  # assigned during UI construction
 
 
 def send(cmd):
+    slog("tx>", f"[{src_tag['cur']}] {cmd}")
     ser.write((cmd + "\n").encode())
     status.config(text=f"sent: {cmd}")
 
@@ -195,6 +228,13 @@ tk.Label(root, text="Latch on: 点击=切换(可多键同按) | Latch off: 鼠�
                     "真机语义：休眠/待机=射频静默，点击任意按键唤醒并搜索主机（15 秒搜不到自动回睡）",
          justify=tk.LEFT).pack(pady=4)
 
+# 窗口尺寸只按控件内容定一次：超宽日志行的全量去 jc_session_log.txt 里看，
+# 屏上超长行直接裁掉——否则每条 rx 都把窗口撑宽又缩回，来回乱跳。
+root.update_idletasks()
+root.geometry(f"{root.winfo_reqwidth() + 40}x{root.winfo_reqheight() + 10}")
+root.pack_propagate(False)
+root.resizable(False, False)
+
 
 # ---- background serial reader + UI pollers ----
 def reader():
@@ -209,6 +249,7 @@ def reader():
                     s = line.decode(errors="replace").strip()
                     if not s:
                         continue
+                    slog("rx", s)
                     if s.startswith("[st] bt:"):
                         m = re.search(r"connected=(\d+).*mode=0x([0-9a-f]+)", s)
                         w = re.search(r"awake=(\d)", s)
@@ -222,7 +263,7 @@ def reader():
                             link_state["text"] = f"{conn} | mode=0x{m.group(2)}"
                     else:
                         # truncate: long hex/log lines must not stretch the window
-                        rx_line["text"] = s[:100]
+                        rx_line["text"] = s[:90]
             else:
                 time.sleep(0.02)
         except Exception:
@@ -250,9 +291,32 @@ def poll_status():
 root.after(250, poll)
 root.after(1500, poll_status)
 
+# 开机把固件的自动扭腰同步成面板默认值（关）。r 0 是非按键命令：
+# 板子休眠时固件直接忽略，不会违背「只有按键才唤醒」的语义。
+src_tag["cur"] = "startup"
+send("r 0")
+src_tag["cur"] = "panel"
+
+
+def on_close():
+    # 点窗口退出 = 真机放回桌面的语义：先发 rst 让板子休眠（射频静默）再关串口
+    slog("ui", "frontend exit (window closed)")
+    try:
+        src_tag["cur"] = "exit"
+        send("rst")
+        ser.flush()
+        time.sleep(0.3)  # 给固件一拍时间收完这条再断串口
+    except Exception:
+        pass
+    root.destroy()
+
+
+root.protocol("WM_DELETE_WINDOW", on_close)
+
 if "--selftest" in sys.argv:
     # Exercise every callback path headlessly, then exit. No rst (would kick
     # the board off the Switch mid-session).
+    src_tag["cur"] = "selftest"  # 日志里和真人按键区分开
     import time as _t
     root.update()
     for name in BUTTONS:
@@ -260,10 +324,12 @@ if "--selftest" in sys.argv:
         root.update()
         release(name)
         root.update()
-    latch.set(False)
-    button("A")
-    release("A")
     latch.set(True)
+    button("A")            # latch on: 首次点击=按住
+    button("A")            # 第二次点击=松开（toggle）
+    latch.set(False)
+    button("A")            # latch off: 鼠标按住路径
+    release("A")
     for cmd in ["gr", "tl", "tr", "rot 0 1", "rot 2 -1", "sqp"]:
         send(cmd)
         root.update()
@@ -291,6 +357,8 @@ if "--selftest" in sys.argv:
         root.update()
         _t.sleep(0.05)
     assert held == set(), f"buttons still latched: {held}"
+    # 退出回调已挂到窗口关闭事件上（selftest 不真触发，避免真发 rst）
+    assert root.protocol("WM_DELETE_WINDOW"), "close handler not registered"
     print("SELFTEST OK: all callbacks exercised without error")
     root.destroy()
     sys.exit(0)

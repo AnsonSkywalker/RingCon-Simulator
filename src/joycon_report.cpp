@@ -8,15 +8,44 @@ namespace joycon {
 
 // Colors MUST match the claimed controller type: Switch 2 rejects a Joy-Con R
 // wearing Pro-gray (UARTSwitchCon's 0x232323 passes on Switch 1 but loops
-// forever on Switch 2, 2026-09-08). Values = official Neon Red (#FF4554)
-// body/grips, dark buttons; 0x605C-0x605D unknown = 0.
-static const uint8_t kColors[14] = {0xFF, 0x45, 0x54, 0x25, 0x26, 0x26,
-                                    0xFF, 0x45, 0x54, 0xFF, 0x45, 0x54,
-                                    0x00, 0x00};
-// 0x603D L-stick(9) + 0x6046 R-stick(9) factory calibration
-static const uint8_t kSticks18[18] = {0x00, 0x07, 0x70, 0x00, 0x08, 0x80,
-                                      0x00, 0x07, 0x70, 0x00, 0x08, 0x80,
-                                      0x00, 0x07, 0x70, 0x00, 0x07, 0x70};
+// forever on Switch 2, 2026-09-08). Values = the real Ring-Con bundle JC(R)'s
+// own factory dump (probe31 v4 0x6050 read, 2026-09-10): neon-yellow body
+// #E6FF00, dark buttons #142800, white grips, 0x605C unknown = 0xFF.
+static const uint8_t kColors[14] = {0xE6, 0xFF, 0x00, 0x14, 0x28, 0x00,
+                                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                    0xFF, 0x00};
+// 0x603D L-stick(9) + 0x6046 R-stick(9) factory calibration. Real JC(R) dump
+// (probe31 v4 2026-09-10): no L stick exists, its region reads as unwritten
+// 0xFF; the R-stick cal is real data.
+static const uint8_t kSticks18[18] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                      0xFF, 0xFF, 0xFF, 0xF7, 0xC8, 0x7C,
+                                      0x18, 0xF5, 0x46, 0x08, 0x65, 0x4A};
+// Regions the NS2 game reads every handshake that the joycontrol-style table
+// left as 0xFF blank. Real JC(R) dumps (probe31 v4, 2026-09-10):
+// 0x6000 serial IS mirrored as of #8: 00 00 + ASCII serial. It was once
+// reverted (test #4 0x08-stall) but that stall is now attributed to "game not
+// launched yet" (benign system-level init), and #7 proved the game's mode-0
+// hammer persists with everything else mirrored - the serial is the last
+// untested identity variable (fw stays on the invented 0x4803 to isolate it).
+static const uint8_t kSerial[16] = {  // 0x6000: 0x00 0x00 + ASCII serial
+    0x00, 0x00, 0x58, 0x43, 0x57, 0x34, 0x30, 0x30,
+    0x34, 0x36, 0x32, 0x32, 0x35, 0x33, 0x38, 0x38};
+static const uint8_t kUnk6080[24] = {  // 0x6080: 6B header + 18B cal record
+    0x5E, 0x01, 0x00, 0x00, 0x0F, 0xF0,
+    0x19, 0xD0, 0x4C, 0xAE, 0x40, 0xE1, 0xEE, 0xE2, 0x2E, 0xEE,
+    0xE2, 0x2E, 0xB4, 0x4A, 0xAB, 0x96, 0x64, 0x49};
+static const uint8_t kUnk6098[18] = {  // 0x6098: the same 18B record repeats
+    0x19, 0xD0, 0x4C, 0xAE, 0x40, 0xE1, 0xEE, 0xE2, 0x2E,
+    0xEE, 0xE2, 0x2E, 0xB4, 0x4A, 0xAB, 0x96, 0x64, 0x49};
+static const uint8_t kUnk8010[56] = {  // 0x8010..0x8047: blank flash, then a
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,   // b2a1-marked 2nd IMU
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,   // cal record the NS2
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,               // game follows the chain
+    0xB2, 0xA1,                                       // 0x8026 marker
+    0x2E, 0xFA, 0x72, 0xFF, 0xA3, 0x00, 0x00, 0x40,   // 0x8028 cal (same 24B
+    0x00, 0x40, 0x00, 0x40, 0x24, 0x00, 0xD9, 0xFF,   // layout as 0x6020)
+    0xF0, 0xFF, 0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // 0x8040 blank
 
 static void put16le(uint8_t* p, int16_t v) {
   p[0] = (uint8_t)(v & 0xFF);
@@ -44,9 +73,13 @@ void ReportPacker::putCommon(uint8_t* buf, const ReportState& s, uint8_t timer) 
   buf[5] = (uint8_t)((s.buttons >> 8) & 0xFF);   // - + stick home capture R ZR
   buf[6] = 0;
   // sticks: only right stick exists on Joy-Con R
-  buf[7] = 0x80; buf[8] = 0x80; buf[9] = 0;      // left (unused)
-  buf[10] = s.stick_x; buf[11] = s.stick_y; buf[12] = 0;
-  buf[13] = 0x80;                                 // vibrator input per joycontrol
+  // sticks/vibrator: byte mirror of a real JC(R) at rest (probe31 2026-09-10).
+  // The left-stick region reads as zeros on a JC R (no left stick), the right
+  // stick carries its real 12-bit center bytes, and [13] is 0x0A - joycontrol
+  // ships 80 80 00 / 80 80 00 / 80 here, which no real frame shows.
+  buf[7] = 0x00; buf[8] = 0x00; buf[9] = 0x00;     // left (unused on JC R)
+  buf[10] = 0xB4; buf[11] = 0x88; buf[12] = 0x7F;  // right stick center
+  buf[13] = 0x0A;                                  // vibrator input byte
 }
 
 size_t ReportPacker::pack0x30Frames(uint8_t* buf, const ReportState (&st)[3],
@@ -77,6 +110,12 @@ size_t ReportPacker::pack0x30Frames(uint8_t* buf, const ReportState (&st)[3],
     put16le(p, 0x0000);
     put16le(p + 2, (int16_t)st[2].strain_raw);
     put16le(p + 4, 0x2000);
+  } else {
+    // Frame-3 accel slot is reserved for ExtDev data on a real JC: zero-filled
+    // until polling is on (probe31 v4 preflight 2026-09-10 - pre-script frames
+    // read 00*6 there, never live accelerometer samples). Streaming synthetic
+    // accel here reads as "ring data nobody asked for" to the game.
+    memset(buf + 14 + 2 * 12, 0, 6);
   }
   return 50;  // 0xA1 + id + timer..IMU end (bytes [0..49])
 }
@@ -109,7 +148,7 @@ bool SpiFlash::read(uint32_t addr, uint8_t* out, uint8_t len) const {
     // (UARTSwitchCon captured reads of size 0x19), so serve the whole span.
     uint8_t img[27];
     memcpy(img, kSticks18, 18);
-    img[18] = 0x00;               // 0x604F unknown
+    img[18] = 0xFF;               // 0x604F unknown (real device reads 0xFF)
     memcpy(img + 19, kColors, 6); // 0x6050 body + 0x6053 buttons
     memcpy(out, img, len);
     return true;
@@ -135,12 +174,29 @@ bool SpiFlash::read(uint32_t addr, uint8_t* out, uint8_t len) const {
     memcpy(out, kColors, len);
     return true;
   }
+  if (addr == kUnk6080Addr && len <= 24) {
+    memcpy(out, kUnk6080, len);
+    return true;
+  }
+  if (addr == kUnk6098Addr && len <= 18) {
+    memcpy(out, kUnk6098, len);
+    return true;
+  }
+  if (addr == kSerialAddr && len <= 16) {
+    memcpy(out, kSerial, len);
+    return true;
+  }
+  if (addr >= kUnk8010Addr && addr + len <= kUnk8010Addr + sizeof(kUnk8010)) {
+    memcpy(out, kUnk8010 + (addr - kUnk8010Addr), len);
+    return true;
+  }
   if (addr == kImuCalAddr && len == 24) {
-    // factory IMU cal: acc origin/sens, gyro origin/sens (dekuNukem defaults)
+    // factory IMU cal - real JC(R) dump (probe31 v4 2026-09-10). Gyro sens
+    // matches the old joycontrol values; only the tiny origin offsets differ.
     static const uint8_t imu[24] = {
-        0x76, 0x00, 0xA6, 0xFE, 0xEA, 0x02,             // acc origin
+        0x1D, 0x00, 0x2D, 0xFF, 0xA3, 0x00,             // acc origin
         0x00, 0x40, 0x00, 0x40, 0x00, 0x40,             // acc sensitivity
-        0x0E, 0x00, 0xFC, 0xFF, 0xE0, 0xFF,             // gyro origin
+        0x10, 0x00, 0xE8, 0xFF, 0xD6, 0xFF,             // gyro origin
         0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34};            // gyro sensitivity
     memcpy(out, imu, 24);
     return true;

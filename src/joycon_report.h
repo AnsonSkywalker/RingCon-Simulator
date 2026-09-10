@@ -62,18 +62,23 @@ class ReportPacker {
   float acc_scale_ = 0.000244f;
 };
 
-// SPI flash emulation: joycontrol-style defaults (0xFF blank + documented
-// factory cal at 0x603D/0x6046 sticks / 0x6020 IMU). No real dump needed.
+// SPI flash emulation: real Joy-Con(R) factory dump where probed (probe31 v4
+// 2026-09-10: 0x6000/0x6080/0x6098/0x8010/0x603D/0x6050/0x6020), 0xFF blank
+// elsewhere.
 class SpiFlash {
  public:
   // Reads emulated flash; fills 0xFF for unmapped regions (caller sends it as-is).
   bool read(uint32_t addr, uint8_t* out, uint8_t len) const;
+  static constexpr uint32_t kSerialAddr = 0x6000;
   static constexpr uint32_t kImuCalAddr = 0x6020;
   static constexpr uint32_t kDevTypeAddr = 0x6012;
   static constexpr uint32_t kStickCalAddr = 0x603D;
   static constexpr uint32_t kStickCalRAddr = 0x6046;
   static constexpr uint32_t kColorExistAddr = 0x601B;
   static constexpr uint32_t kColorAddr = 0x6050;
+  static constexpr uint32_t kUnk6080Addr = 0x6080;
+  static constexpr uint32_t kUnk6098Addr = 0x6098;
+  static constexpr uint32_t kUnk8010Addr = 0x8010;  // 56B image to 0x8047
 };
 
 }  // namespace joycon
